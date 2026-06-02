@@ -1,0 +1,78 @@
+/* biome-ignore-all lint/correctness/noInvalidPositionAtImportRule: reason */
+/* biome-ignore-all lint/complexity/noImportantStyles: react-select generated classes need explicit overrides for the portaled dropdown. */
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Preline UI */
+@source "../node_modules/preline/dist/*.js";
+@import "../node_modules/preline/variants.css";
+
+/* Toastify - import base then override for custom styling */
+@import "toastify-js/src/toastify.css";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+}
+
+.toastify {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  max-width: none;
+}
+
+.worktree-dashboard-top-layer {
+  z-index: 2147483646;
+}
+
+@utility animation-delay-* {
+  animation-delay: --value(integer) ms;
+}
+
+@keyframes cmdline-shake {
+  0% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-3px);
+  }
+  40% {
+    transform: translateX(3px);
+  }
+  60% {
+    transform: translateX(-2px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.cmdline-submit-shake {
+  animation: cmdline-shake 0.28s ease-in-out;
+}
+
+button {
+  cursor: pointer;
+}
+
+@supports (font: -apple-system-body) {
+  select:not([multiple]):not([size]) {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.75'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: calc(100% - 0.75rem) center;
+    background-repeat: no-repeat;
+    background-size: 0.875rem 0.875rem;
+    padding-right: 2.5rem;
+    text-align: left;
+    text-align-last: left;
+    line-height: normal;
+  }
+}

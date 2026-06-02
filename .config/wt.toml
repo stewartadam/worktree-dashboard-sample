@@ -1,0 +1,12 @@
+[aliases]
+stop-all-services = "WORKTREE_TARGET={{ managed_worktree_path | default(worktree_path) }} node ./scripts/stop-processes.mjs"
+
+[[pre-start]]
+setup-env = "node ./scripts/setup-env.mjs"
+install = "npm install"
+
+[[post-start]]
+build = "cargo build --workspace"
+
+[pre-remove]
+stop-services = "wt step stop-all-services --managed-worktree-path={{ worktree_path }} --yes"

@@ -1,0 +1,9 @@
+node_modules/
+.env
+webui/dist/
+src-tauri/target/
+playwright-report/
+test-results/
+.serena/
+*.tsbuildinfo
+.DS_Store
