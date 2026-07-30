@@ -1,7 +1,11 @@
 # Worktree Dashboard
 
-A Tauri + Solid sample app with a local dashboard for inspecting and managing
-the same app across multiple git worktrees.
+This sample contains the a sample worktree dashboard that permits easily inspecting and launching isolated backend + front-end dev servers for your app across different worktrees.
+
+<img width="786" height="469" alt="image" src="https://github.com/user-attachments/assets/235bd39a-5c55-4e9b-85f3-e986fcf811c6" />
+
+[`worktrunk`](https://worktrunk.dev/) hooks are used to automatically prepare new worktrees and assign each worktree unique ports to listen on.
+Port detection is also available to display the PID of externally-launched backend instances that are currently bound to the port(s) assigned to the worktree.
 
 The repo currently has three runtime pieces:
 
