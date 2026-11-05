@@ -161,6 +161,18 @@ worktree's `.env`, and can start, stop, or recycle the managed services:
 - `backend`: `cargo run` in `src-tauri`
 - `ui`: `npm run dev` from the worktree root
 
+The page updates as soon as anything changes, over a Server-Sent Events stream at
+`GET /api/events`. Its search box filters by branch name or path. Type a branch that
+has no worktree and press Shift+Enter, or choose **Create worktree**, to create one
+through `wt switch`: a branch that exists locally or on `origin` is checked out, and
+any other name becomes a new branch from `origin/HEAD`.
+
+A worktree's **More actions** menu opens it in VS Code or deletes it. Delete keeps a
+worktree with uncommitted files, or a branch that hasn't landed in `origin`'s default
+branch or a merged pull request. Hold Shift to choose **Force delete**, which
+discards both. The primary worktree and the checkout running the dashboard can't be
+deleted.
+
 To adapt the dashboard to your app, edit
 [`worktree-dashboard/services.mjs`](worktree-dashboard/services.mjs). It's the one
 place services are defined: the API, the page's columns and menus, and the MCP
@@ -202,6 +214,8 @@ The included `.config/wt.toml` defines:
 - `pre-remove`: run `wt service stop -s all --best-effort`, which gives up after 5
   seconds per request and never blocks removal
 - `wt service`: an alias that manages services from the terminal
+- `wt done`: an alias that removes a worktree whose branch has landed, and keeps it
+  with a list of unmerged commits otherwise
 
 ## Managing services from a terminal
 

@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  watch,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
@@ -25,6 +26,9 @@ import {
   servicePortFromEnv,
   servicesForTarget,
 } from "./services.mjs";
+import { createStateStream } from "./state-stream.mjs";
+import { createWorktree } from "./worktree-create.mjs";
+import { removeWorktree } from "./worktree-remove.mjs";
 
 function readLocalEnv() {
   try {
@@ -56,7 +60,9 @@ const DASHBOARD_HOST =
   process.env.WORKTREE_DASHBOARD_HOST ??
   LOCAL_ENV.WORKTREE_DASHBOARD_HOST ??
   "127.0.0.1";
-const DASHBOARD_ROOT = process.cwd();
+const DASHBOARD_ROOT = resolve(process.cwd());
+const FALLBACK_PRIMARY_BRANCHES = ["develop", "main"];
+let primaryBranchesPromise = null;
 const checkRequest = createRequestGuard({
   dashboardHost: DASHBOARD_HOST,
   allowedOrigins: parseAllowedOrigins(
@@ -272,6 +278,7 @@ async function startManagedService(worktreePath, service) {
   child.on("error", (error) => {
     state.lastError = error.message;
     writeLogLine(state, `Process error: ${error.message}`);
+    stateStream.notify();
   });
 
   child.on("exit", (code, signal) => {
@@ -285,6 +292,7 @@ async function startManagedService(worktreePath, service) {
       `Exited with code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
     closeLogStream(state);
+    stateStream.notify();
   });
 
   return {
@@ -850,10 +858,55 @@ function openServiceLog(worktreePath, service) {
   );
 }
 
-/** Returns one listener PID for an open port, or null when none can be found. */
-async function firstListeningPid(port) {
-  const { pids } = await findListeningPids(port);
-  return pids[0] ?? null;
+/** Reports whether a process exists; only a missing-process error means it doesn't. */
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isMissingProcessError(error);
+  }
+}
+
+/** Listener PIDs by port, reused while the process lives so lookups don't spawn lsof. */
+const listenerPidCache = new Map();
+
+/**
+ * Returns the listener PID on an open port, looking it up (a subprocess) only when
+ * the port has no cached PID or the cached process has exited.
+ */
+async function cachedListenerPid(port) {
+  const cached = listenerPidCache.get(port);
+  if (cached && processAlive(cached)) return cached;
+  const pid = (await findListeningPids(port)).pids[0] ?? null;
+  if (pid) listenerPidCache.set(port, pid);
+  else listenerPidCache.delete(port);
+  return pid;
+}
+
+/** The cached `git worktree list`, while the Git metadata watchers keep it fresh. */
+let worktreeListPromise = null;
+let worktreeMetadataWatched = false;
+
+/**
+ * Returns `git worktree list`, cached until `invalidateWorktreeList` runs, so
+ * snapshots don't spawn Git each time. Without working watchers every call asks
+ * Git, and a failed listing is never cached.
+ */
+function listWorktrees() {
+  if (!worktreeMetadataWatched) invalidateWorktreeList();
+  worktreeListPromise ??= runGit(["worktree", "list", "--porcelain"])
+    .then(parseWorktreeList)
+    .catch((error) => {
+      worktreeListPromise = null;
+      throw error;
+    });
+  return worktreeListPromise;
+}
+
+/** Drops the cached worktree list, so the next snapshot asks Git again. */
+function invalidateWorktreeList() {
+  worktreeListPromise = null;
 }
 
 /**
@@ -866,7 +919,9 @@ async function collectServiceState(service, env, state) {
   const definition = SERVICE_DEFINITIONS[service];
   const port = servicePortFromEnv(service, env);
   const portOpen = port === null ? false : await probePortOpen(port);
-  const listenerPid = portOpen ? await firstListeningPid(port) : null;
+  // A closed port may reopen under another process, so its cached PID can't be reused.
+  if (port !== null && !portOpen) listenerPidCache.delete(port);
+  const listenerPid = portOpen ? await cachedListenerPid(port) : null;
   let reachable = portOpen;
   if (definition.oneShot) {
     reachable =
@@ -888,11 +943,13 @@ async function collectServiceState(service, env, state) {
 }
 
 async function collectWorktreeState() {
-  const raw = await runGit(["worktree", "list", "--porcelain"]);
-  const parsed = parseWorktreeList(raw);
+  const [parsed, primaryBranches] = await Promise.all([
+    listWorktrees(),
+    getPrimaryBranches(),
+  ]);
 
   const collected = await Promise.all(
-    parsed.map(async (entry) => {
+    parsed.map(async (entry, index) => {
       const worktreePath = String(entry.worktree);
       const env = await readEnvMap(worktreePath);
       const branch = shortBranchName(
@@ -915,16 +972,33 @@ async function collectWorktreeState() {
         isMain: branch === "main",
         envPath: env.envPath,
         envExists: env.exists,
+        // Git lists the primary worktree first; it and the dashboard's own checkout stay.
+        canRemove: index > 0 && resolve(worktreePath) !== DASHBOARD_ROOT,
         basePort: basePortFromEnv(env.values),
         services: Object.fromEntries(serviceEntries),
       };
     }),
   );
-  const worktrees = collected;
+  return sortWorktrees(collected, primaryBranches);
+}
 
-  worktrees.sort((a, b) => {
-    if (a.isMain !== b.isMain) {
-      return a.isMain ? -1 : 1;
+/**
+ * Orders worktrees for display: primary branches first (in the order given),
+ * then worktrees with a `.env` before those without, then by branch name,
+ * falling back to path for detached worktrees.
+ */
+export function sortWorktrees(worktrees, primaryBranches) {
+  const primaryRank = (worktree) => {
+    const index = worktree.branch
+      ? primaryBranches.indexOf(worktree.branch)
+      : -1;
+    return index === -1 ? primaryBranches.length : index;
+  };
+
+  return [...worktrees].sort((a, b) => {
+    const rankDelta = primaryRank(a) - primaryRank(b);
+    if (rankDelta !== 0) {
+      return rankDelta;
     }
     if (a.envExists !== b.envExists) {
       return a.envExists ? -1 : 1;
@@ -934,11 +1008,35 @@ async function collectWorktreeState() {
     }
     return a.path.localeCompare(b.path);
   });
-
-  return worktrees;
 }
 
-/** Returns headers shared by all dashboard API responses. */
+/**
+ * Builds the ordered primary branch list from the remote's default branch
+ * (e.g. `origin/develop`, when known) followed by the conventional
+ * long-lived branches, without duplicates.
+ */
+export function primaryBranchesFrom(remoteHeadRef) {
+  const detected = remoteHeadRef?.trim().replace(/^[^/]+\//u, "");
+  return [...new Set([detected, ...FALLBACK_PRIMARY_BRANCHES].filter(Boolean))];
+}
+
+/**
+ * Resolves the primary branches once per dashboard process. `origin/HEAD` is
+ * only set by `git clone` or `git remote set-head`, so its absence just leaves
+ * the fallback list.
+ */
+function getPrimaryBranches() {
+  primaryBranchesPromise ??= runGit([
+    "symbolic-ref",
+    "--quiet",
+    "--short",
+    "refs/remotes/origin/HEAD",
+  ])
+    .catch(() => null)
+    .then(primaryBranchesFrom);
+  return primaryBranchesPromise;
+}
+
 /** Writes a JSON response that browsers and proxies must not cache. */
 function jsonResponse(res, statusCode, payload) {
   const encoded = JSON.stringify(payload);
@@ -1014,6 +1112,125 @@ async function isKnownWorktreePath(worktreePath) {
   return current.some((entry) => entry.path === worktreePath);
 }
 
+async function findKnownWorktree(worktreePath) {
+  const current = await collectWorktreeState();
+  return current.find((entry) => entry.path === worktreePath);
+}
+
+/** Parses the `force` flag that lets removal discard local changes and unmerged work. */
+function parseForce(searchParams) {
+  const force = searchParams.get("force");
+  return force === "1" || force?.toLowerCase() === "true";
+}
+
+/**
+ * Closes a removed worktree's service logs and drops its managed-process record.
+ * A record with a child still running (its stop timed out) is kept, so its log
+ * stream stays open for the child's output and shutdown can still kill it.
+ */
+function forgetManagedRecord(worktreePath) {
+  const record = managedServices.get(worktreePath);
+  if (!record) return;
+  if (SERVICES.some((service) => record[service].running)) return;
+  for (const service of SERVICES) {
+    closeLogStream(record[service]);
+  }
+  managedServices.delete(worktreePath);
+}
+
+/** Builds the snapshot the page shows and the event stream sends. */
+async function dashboardSnapshot() {
+  return {
+    generatedAt: formatTimestamp(),
+    dashboardPid: process.pid,
+    basePortEnv: BASE_PORT_ENV,
+    services: SERVICE_CATALOG,
+    worktrees: await collectWorktreeState(),
+  };
+}
+
+const stateStream = createStateStream({
+  collect: dashboardSnapshot,
+  /** Checks fast while a managed service runs but isn't reachable yet, i.e. is starting. */
+  needsFastChecks: (snapshot) =>
+    snapshot.worktrees.some((worktree) =>
+      SERVICES.some(
+        (service) =>
+          worktree.services[service].running &&
+          !worktree.services[service].reachable,
+      ),
+    ),
+  /** Logs a failed snapshot; the stream retries on its next timed check. */
+  onError: (error) =>
+    console.error("Failed to refresh the dashboard event stream:", error),
+});
+
+/**
+ * Watches Git's metadata for worktrees being added or removed and for branch
+ * switches (each worktree's HEAD), dropping the cached worktree list and pushing a
+ * new snapshot. Index and ref updates are ignored, since they don't change the list.
+ * Linked worktrees live under `<common dir>/worktrees`, which Git creates with the
+ * first one, so that watch is retried whenever the top-level watch fires.
+ */
+async function watchWorktreeMetadata() {
+  const commonDir = resolve(
+    DASHBOARD_ROOT,
+    (await runGit(["rev-parse", "--git-common-dir"])).trim(),
+  );
+  /** Invalidates the worktree list and tells the stream something changed. */
+  const changed = () => {
+    invalidateWorktreeList();
+    stateStream.notify();
+  };
+  let worktreesWatcher = null;
+  /**
+   * (Re)starts the recursive watch on linked worktrees' metadata. Git deletes the
+   * folder with the last linked worktree and recreates it with the next, and a watch
+   * on a deleted folder goes silent, so each top-level event for it starts over.
+   */
+  const watchLinkedWorktrees = () => {
+    worktreesWatcher?.close();
+    worktreesWatcher = null;
+    try {
+      worktreesWatcher = watch(
+        join(commonDir, "worktrees"),
+        { recursive: true, persistent: false },
+        /** Reacts to worktree folders appearing or vanishing and to HEAD changes. */
+        (_event, filename) => {
+          const name = String(filename ?? "").replaceAll("\\", "/");
+          // `<name>` is a worktree being added or removed; `<name>/HEAD` a branch switch.
+          if (!name.includes("/") || name.endsWith("/HEAD")) changed();
+        },
+      );
+      /** Drops a broken watch; the next top-level event for the folder restarts it. */
+      worktreesWatcher.on("error", () => {
+        worktreesWatcher?.close();
+        worktreesWatcher = null;
+      });
+    } catch {
+      worktreesWatcher = null;
+    }
+  };
+  watch(
+    commonDir,
+    { persistent: false },
+    /** Follows the main worktree's HEAD and the linked-worktrees folder coming and going. */
+    (_event, filename) => {
+      if (filename === "worktrees") watchLinkedWorktrees();
+      if (filename === "HEAD" || filename === "worktrees") changed();
+    },
+  );
+  watchLinkedWorktrees();
+  worktreeMetadataWatched = true;
+}
+
+watchWorktreeMetadata().catch((error) => {
+  console.warn(
+    "Could not watch Git metadata; worktree changes appear on manual refresh:",
+    error,
+  );
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     const method = req.method ?? "GET";
@@ -1053,13 +1270,69 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === "GET" && url.pathname === "/api/worktrees") {
-      const worktrees = await collectWorktreeState();
-      jsonResponse(res, 200, {
-        generatedAt: formatTimestamp(),
-        dashboardPid: process.pid,
-        basePortEnv: BASE_PORT_ENV,
-        services: SERVICE_CATALOG,
-        worktrees,
+      jsonResponse(res, 200, await dashboardSnapshot());
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/events") {
+      await stateStream.addClient(req, res);
+      return;
+    }
+
+    if (method === "POST") {
+      // Every POST can change what the snapshot shows; report it once it's answered.
+      res.once("finish", () => stateStream.notify());
+    }
+
+    if (method === "POST" && url.pathname === "/api/worktrees") {
+      const result = await createWorktree({
+        branch: url.searchParams.get("branch") ?? "",
+        root: DASHBOARD_ROOT,
+      });
+      invalidateWorktreeList();
+      const status = result.ok ? 200 : result.reason === "invalid" ? 400 : 409;
+      jsonResponse(res, status, result);
+      return;
+    }
+
+    const removeMatch = url.pathname.match(
+      /^\/api\/worktrees\/([^/]+)\/remove$/u,
+    );
+
+    if (method === "POST" && removeMatch) {
+      const [, worktreeId] = removeMatch;
+      const worktreePath = pathFromWorktreeId(worktreeId);
+      const worktree = worktreePath
+        ? await findKnownWorktree(worktreePath)
+        : undefined;
+
+      if (!worktree) {
+        textResponse(res, 404, "Unknown worktree id");
+        return;
+      }
+      if (!worktree.canRemove) {
+        textResponse(
+          res,
+          400,
+          "The primary worktree and the checkout running the dashboard can't be removed",
+        );
+        return;
+      }
+
+      const result = await removeWorktree({
+        worktreePath,
+        branch: worktree.branch,
+        force: parseForce(url.searchParams),
+        root: DASHBOARD_ROOT,
+      });
+      invalidateWorktreeList();
+      // A failed removal can still have deleted the worktree before erroring.
+      if (result.ok || !(await isKnownWorktreePath(worktreePath))) {
+        forgetManagedRecord(worktreePath);
+      }
+      jsonResponse(res, result.ok ? 200 : 409, {
+        ...result,
+        action: "remove",
       });
       return;
     }
@@ -1202,6 +1475,7 @@ server.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
 
 function shutdown(signal) {
   console.log(`Received ${signal}, stopping managed processes...`);
+  stateStream.close();
 
   for (const [worktreePath, services] of managedServices.entries()) {
     for (const service of SERVICES) {
