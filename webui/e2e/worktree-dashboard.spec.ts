@@ -294,18 +294,42 @@ test("Delete reports a refusal, and Shift forces it", async ({ page }) => {
   });
   await page.goto("/worktree-dashboard.html");
 
+  const dialog = page.getByRole("alertdialog");
+
+  // Cancelling sends nothing.
   await page.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(dialog).toContainText("Delete feature?");
+  await expect(dialog).toContainText(target.path);
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Escape cancels too.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(removals).toEqual([]);
+
+  // Confirming a plain delete reports the refusal.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(
     page.getByText(/feature has 1 uncommitted change \(a\.txt\)/u),
   ).toBeVisible();
 
+  // Force stays chosen in the dialog after Shift is released.
   await page.getByRole("button", { name: "More actions" }).click();
   await page.keyboard.down("Shift");
   const force = page.getByRole("button", { name: "Force delete" });
   await expect(force).toBeVisible();
   await force.click({ modifiers: ["Shift"] });
   await page.keyboard.up("Shift");
+  await expect(dialog).toContainText("Force delete feature?");
+  await expect(dialog).toContainText("permanently discards");
+  await dialog.getByRole("button", { name: "Force delete" }).click();
 
   await expect.poll(() => removals).toEqual(["", "?force=1"]);
 });

@@ -170,7 +170,7 @@ any other name becomes a new branch from `origin/HEAD`.
 A worktree's **More actions** menu opens it in VS Code or deletes it. Delete keeps a
 worktree with uncommitted files, or a branch that hasn't landed in `origin`'s default
 branch or a merged pull request. Hold Shift to choose **Force delete**, which
-discards both. The primary worktree and the checkout running the dashboard can't be
+discards both. Both ask for confirmation first. The primary worktree and the checkout running the dashboard can't be
 deleted.
 
 To adapt the dashboard to your app, edit

@@ -80,6 +80,14 @@ interface RemoveWorktreeResponse {
   total: number;
 }
 
+/** A delete waiting for the user to confirm it. */
+interface DeleteRequest {
+  worktreeId: string;
+  label: string;
+  path: string;
+  force: boolean;
+}
+
 interface ActionMenuItem {
   action: ServiceAction;
   icon: string;
@@ -249,6 +257,9 @@ function WorktreeDashboardApp() {
   const [searchQuery, setSearchQuery] = createSignal("");
   const [creatingBranch, setCreatingBranch] = createSignal<string | null>(null);
   const [shiftHeld, setShiftHeld] = createSignal(false);
+  const [deleteRequest, setDeleteRequest] = createSignal<DeleteRequest | null>(
+    null,
+  );
 
   const worktrees = createMemo(() => payload.worktrees);
   /** Worktrees whose branch name or path contains every word typed in the search box. */
@@ -782,7 +793,12 @@ function WorktreeDashboardApp() {
                 disabled={!props.worktree.canRemove || pending("remove")}
                 onClick={(event) => {
                   closeMenu();
-                  void deleteWorktree(props.worktree.id, event.shiftKey);
+                  setDeleteRequest({
+                    worktreeId: props.worktree.id,
+                    label: props.worktree.branch ?? props.worktree.name,
+                    path: props.worktree.path,
+                    force: event.shiftKey,
+                  });
                 }}
               >
                 <HeroIcon icon="trash" class="size-3.5" />
@@ -792,6 +808,81 @@ function WorktreeDashboardApp() {
           </Portal>
         </Show>
       </div>
+    );
+  }
+
+  /**
+   * Asks before deleting. Force is fixed when the menu item is chosen, so releasing
+   * Shift can't change what the dialog says. Cancel takes focus, so pressing Enter by
+   * accident keeps the worktree.
+   */
+  function ConfirmDeleteDialog(props: { request: DeleteRequest }) {
+    const titleId = "confirm-delete-title";
+    const descriptionId = "confirm-delete-description";
+    const cancel = () => setDeleteRequest(null);
+    const confirm = () => {
+      // Read these first: closing the dialog makes `props.request` a stale read.
+      const { worktreeId, force } = props.request;
+      setDeleteRequest(null);
+      void deleteWorktree(worktreeId, force);
+    };
+    return (
+      <Portal>
+        <div
+          class="fixed inset-0 flex items-center justify-center bg-slate-950/50 p-4"
+          style={{ "z-index": ACTION_MENU_Z_INDEX }}
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) cancel();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") cancel();
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            aria-describedby={descriptionId}
+            class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+          >
+            <h2
+              id={titleId}
+              class="text-base font-semibold text-slate-900 dark:text-slate-100"
+            >
+              {props.request.force ? "Force delete" : "Delete"}{" "}
+              {props.request.label}?
+            </h2>
+            <p
+              id={descriptionId}
+              class="mt-2 text-sm text-slate-600 dark:text-slate-300"
+            >
+              {props.request.force
+                ? "This permanently discards uncommitted changes and unmerged commits, and deletes the worktree and its branch."
+                : "This removes the worktree and, once merged, its branch. A worktree with uncommitted changes or unmerged commits is kept."}
+            </p>
+            <p class="mt-2 break-all font-mono text-xs text-slate-500 dark:text-slate-400">
+              {props.request.path}
+            </p>
+            <div class="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                ref={(element) => queueMicrotask(() => element.focus())}
+                class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                onClick={cancel}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                onClick={confirm}
+              >
+                {props.request.force ? "Force delete" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Portal>
     );
   }
 
@@ -1280,6 +1371,10 @@ function WorktreeDashboardApp() {
           </div>
         </Show>
       </section>
+
+      <Show when={deleteRequest()}>
+        {(request) => <ConfirmDeleteDialog request={request()} />}
+      </Show>
 
       <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
         Only processes started by this dashboard instance are marked as managed.
