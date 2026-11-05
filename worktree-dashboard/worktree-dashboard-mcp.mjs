@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
-import {
-  appendFileSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import {
+  ALL_SELECTOR,
+  SERVICE_TARGET_NAMES,
+  SERVICES,
+  servicesForTarget,
+} from "./services.mjs";
 
 const SERVER_NAME = "worktree-dashboard";
 const SERVER_VERSION = "0.1.0";
@@ -62,14 +63,11 @@ const LOG_TAIL_MAX_LINES = 80;
 const LOG_TAIL_MAX_CHARS = 8000;
 const DEBUG_LOG_PATH =
   process.env.WORKTREE_DASHBOARD_MCP_DEBUG_LOG?.trim() || null;
-const WORKTREE_MANAGED_SERVICES = ["backend", "ui"];
-const ALL_SELECTOR = "all";
 
 const TOOLS = [
   {
     name: "dashboard_list_worktrees",
-    description:
-      "List all worktrees discovered by the worktree dashboard.",
+    description: "List all worktrees discovered by the worktree dashboard.",
     inputSchema: {
       type: "object",
       properties: {
@@ -121,12 +119,11 @@ const TOOLS = [
           type: "array",
           items: {
             type: "string",
-            enum: [...WORKTREE_MANAGED_SERVICES, ALL_SELECTOR],
+            enum: SERVICE_TARGET_NAMES,
           },
           minItems: 1,
-          description:
-            "Service targets. Defaults to [backend, ui]. Use [all] to target both services.",
-          default: ["backend", "ui"],
+          description: "Service targets. Defaults to [all], every service.",
+          default: [ALL_SELECTOR],
         },
       },
       required: ["worktree", "action"],
@@ -461,14 +458,11 @@ function asTextToolResult(text, structuredContent) {
 }
 
 function statusSummary(worktree, service) {
-  const managedState = worktree.managed?.[service];
-  const observedOpen = observedOpenForService(worktree, service);
+  const state = worktree.services?.[service];
 
-  if (managedState?.running && observedOpen) return "managed + reachable";
-  if (managedState?.running && !observedOpen)
-    return "managed starting/unreachable";
-  if (!managedState?.running && observedOpen)
-    return "external process detected";
+  if (state?.running && state.reachable) return "managed + reachable";
+  if (state?.running) return "managed starting/unreachable";
+  if (state?.reachable) return "external process detected";
   return "stopped";
 }
 
@@ -478,21 +472,22 @@ function summarizeWorktree(worktree) {
     path: worktree.path,
     name: worktree.name,
     branch: worktree.branch,
-    backendPort: worktree.backendPort,
-    webUiPort: worktree.webUiPort,
-    webUiUrl: worktree.webUiUrl,
-    backend: statusSummary(worktree, "backend"),
-    ui: statusSummary(worktree, "ui"),
-    managed: {
-      backend: {
-        running: Boolean(worktree.managed?.backend?.running),
-        pid: worktree.managed?.backend?.pid ?? null,
-      },
-      ui: {
-        running: Boolean(worktree.managed?.ui?.running),
-        pid: worktree.managed?.ui?.pid ?? null,
-      },
-    },
+    basePort: worktree.basePort,
+    services: Object.fromEntries(
+      SERVICES.map((service) => {
+        const state = worktree.services?.[service];
+        return [
+          service,
+          {
+            status: statusSummary(worktree, service),
+            port: state?.port ?? null,
+            url: state?.url ?? null,
+            running: Boolean(state?.running),
+            pid: state?.pid ?? null,
+          },
+        ];
+      }),
+    ),
   };
 }
 
@@ -517,27 +512,16 @@ function uniqueNonEmptyStrings(values) {
 }
 
 function resolveWorktreeServiceTargets(values) {
-  const targets = uniqueNonEmptyStrings(values);
-  if (targets.includes(ALL_SELECTOR)) {
-    return [...WORKTREE_MANAGED_SERVICES];
-  }
-  return targets;
-}
-
-function observedOpenForService(worktree, service) {
-  if (service === "backend") {
-    return Boolean(worktree.observed?.backendPortOpen);
-  }
-  if (service === "ui") {
-    return Boolean(worktree.observed?.webUiPortOpen);
-  }
-  return false;
+  return uniqueNonEmptyStrings(
+    uniqueNonEmptyStrings(values).flatMap(
+      (target) => servicesForTarget(target) ?? [target],
+    ),
+  );
 }
 
 function classifyStartup(worktree, service) {
-  const managed = worktree.managed?.[service] ?? null;
-  const observedOpen = observedOpenForService(worktree, service);
-  if (observedOpen) {
+  const managed = worktree.services?.[service] ?? null;
+  if (managed?.reachable) {
     return {
       service,
       status: "online",
@@ -774,9 +758,7 @@ async function runTool(name, args) {
   if (name === "dashboard_worktree_manage") {
     const worktreePath = String(args.worktree ?? "");
     const action = String(args.action ?? "");
-    const serviceModes = uniqueNonEmptyStrings(
-      args.services ?? ["backend", "ui"],
-    );
+    const serviceModes = uniqueNonEmptyStrings(args.services ?? [ALL_SELECTOR]);
     const services = resolveWorktreeServiceTargets(serviceModes);
     if (!worktreePath) {
       throw new Error("worktree is required");
@@ -788,14 +770,10 @@ async function runTool(name, args) {
       throw new Error("services must contain at least one target");
     }
     if (
-      !serviceModes.every(
-        (service) =>
-          WORKTREE_MANAGED_SERVICES.includes(service) ||
-          service === ALL_SELECTOR,
-      )
+      !serviceModes.every((service) => SERVICE_TARGET_NAMES.includes(service))
     ) {
       throw new Error(
-        "services must contain only: backend, ui, all",
+        `services must contain only: ${SERVICE_TARGET_NAMES.join(", ")}`,
       );
     }
 

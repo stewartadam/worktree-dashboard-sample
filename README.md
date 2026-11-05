@@ -157,10 +157,15 @@ origins are always allowed, so other servers on this machine can still reach the
 API.
 
 The dashboard discovers worktrees with `git worktree list`, reads each
-worktree's `.env`, and can start, stop, or recycle two managed services:
+worktree's `.env`, and can start, stop, or recycle the managed services:
 
 - `backend`: `cargo run` in `src-tauri`
 - `ui`: `npm run dev` from the worktree root
+
+To adapt the dashboard to your app, edit
+[`worktree-dashboard/services.mjs`](worktree-dashboard/services.mjs). It's the one
+place services are defined: the API, the page's columns and menus, and the MCP
+server all read from it. Restart the dashboard API afterwards.
 
 Managed service logs are written under the system temp directory in
 `worktree-dashboard/`.
@@ -250,8 +255,8 @@ Available MCP tools:
 - `dashboard_worktree_manage`
 
 `dashboard_worktree_manage` requires `worktree` and `action`. `action` is one
-of `start`, `stop`, or `recycle`. `services` defaults to `["backend", "ui"]`
-and accepts `backend`, `ui`, or `all`.
+of `start`, `stop`, or `recycle`. `services` defaults to `["all"]` and accepts any
+service or group from `worktree-dashboard/services.mjs`.
 
 ## Validation
 

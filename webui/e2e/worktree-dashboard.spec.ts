@@ -1,34 +1,33 @@
 import { expect, test } from "@playwright/test";
 
-const EMPTY_SERVICE_STATE = {
-  pid: null,
-  running: false,
-  startedAt: null,
-  lastExitCode: null,
-  lastExitSignal: null,
-  lastError: null,
-  logPath: null,
-};
+const SERVICE_CATALOG = [
+  {
+    name: "backend",
+    label: "Backend",
+    hasPort: true,
+    hasUrl: false,
+    oneShot: false,
+  },
+  { name: "ui", label: "Web UI", hasPort: true, hasUrl: true, oneShot: false },
+];
 
 /**
- * Builds the managed-service snapshot expected by the worktree dashboard UI.
+ * Builds a stopped service snapshot expected by the worktree dashboard UI.
  */
-function managedServices() {
+function serviceState(port: number | null, url: string | null = null) {
   return {
-    backend: EMPTY_SERVICE_STATE,
-    ui: EMPTY_SERVICE_STATE,
-  };
-}
-
-/**
- * Builds the observed process snapshot expected by the worktree dashboard UI.
- */
-function observedProcesses() {
-  return {
-    backendPortOpen: false,
-    webUiPortOpen: false,
-    backendPid: null,
-    webUiPid: null,
+    pid: null,
+    running: false,
+    startedAt: null,
+    lastExitCode: null,
+    lastExitSignal: null,
+    lastError: null,
+    logPath: null,
+    port,
+    url,
+    portOpen: false,
+    listenerPid: null,
+    reachable: false,
   };
 }
 
@@ -54,11 +53,14 @@ function worktree({
     isMain: branch === "main",
     envPath: `${path}/.env`,
     envExists,
-    backendPort: port,
-    webUiPort: port === null ? null : port + 1,
-    webUiUrl: port === null ? null : `http://localhost:${port + 1}`,
-    managed: managedServices(),
-    observed: observedProcesses(),
+    basePort: port,
+    services: {
+      backend: serviceState(port),
+      ui: serviceState(
+        port === null ? null : port + 1,
+        port === null ? null : `http://localhost:${port + 1}`,
+      ),
+    },
   };
 }
 
@@ -71,6 +73,8 @@ test("worktree dashboard groups uninitialized worktrees at the bottom", async ({
       body: JSON.stringify({
         generatedAt: new Date("2026-05-29T12:00:00Z").toISOString(),
         dashboardPid: 12345,
+        basePortEnv: "WORKTREE_APP_PORT",
+        services: SERVICE_CATALOG,
         worktrees: [
           worktree({
             branch: "split/layer-panel-sampling",
@@ -106,4 +110,54 @@ test("worktree dashboard groups uninitialized worktrees at the bottom", async ({
   expect(tableText.indexOf("uninitialized worktrees")).toBeLessThan(
     tableText.indexOf("split/layer-panel-sampling"),
   );
+});
+
+test("worktree dashboard builds columns and menus from the service catalog", async ({
+  page,
+}) => {
+  const base = worktree({ branch: "feature", envExists: true, port: 3080 });
+  await page.route("**/worktree-api/worktrees", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        generatedAt: new Date("2026-05-29T12:00:00Z").toISOString(),
+        dashboardPid: 12345,
+        basePortEnv: "MY_PORT",
+        services: [
+          ...SERVICE_CATALOG,
+          {
+            name: "docs",
+            label: "Docs",
+            hasPort: true,
+            hasUrl: true,
+            oneShot: false,
+          },
+        ],
+        worktrees: [
+          {
+            ...base,
+            services: {
+              ...base.services,
+              docs: serviceState(3082, "http://localhost:3082"),
+            },
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/worktree-dashboard.html");
+
+  await expect(page.getByRole("columnheader", { name: "Docs" })).toBeVisible();
+  await expect(page.getByText("3082")).toBeVisible();
+  await expect(page.getByText("MY_PORT=3080")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Docs" })).toHaveAttribute(
+    "href",
+    "http://localhost:3082",
+  );
+
+  await page.getByRole("button", { name: "Stop..." }).click();
+  await expect(
+    page.getByRole("button", { name: "Docs", exact: true }),
+  ).toBeVisible();
 });

@@ -13,6 +13,17 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { createRequestGuard, parseAllowedOrigins } from "./request-guard.mjs";
+import {
+  BASE_PORT_ENV,
+  basePortFromEnv,
+  SERVICE_CATALOG,
+  SERVICE_DEFINITIONS,
+  SERVICE_TARGET_NAMES,
+  SERVICES,
+  serviceArgs,
+  servicePortFromEnv,
+  servicesForTarget,
+} from "./services.mjs";
 
 function readLocalEnv() {
   try {
@@ -53,22 +64,6 @@ const checkRequest = createRequestGuard({
   ),
 });
 const LOG_DIR = join(tmpdir(), "worktree-dashboard");
-const SERVICE_DEFINITIONS = {
-  backend: {
-    command: process.platform === "win32" ? "cargo.exe" : "cargo",
-    workdir: "./src-tauri",
-    args: ["run"],
-    label: "cargo run",
-  },
-  ui: {
-    command: process.platform === "win32" ? "npm.cmd" : "npm",
-    args: ["run", "dev"],
-    label: "npm run dev",
-  },
-};
-const SERVICES = Object.keys(SERVICE_DEFINITIONS);
-const PORT_SCOPED_SERVICES = new Set(["backend", "ui"]);
-
 mkdirSync(LOG_DIR, { recursive: true });
 
 /** @type {Map<string, Record<string, ServiceState>>} */
@@ -197,11 +192,6 @@ function serviceStateSnapshot(state) {
   };
 }
 
-async function processEnvForService(worktreePath) {
-  const env = await readEnvMap(worktreePath);
-  return { ...process.env, ...env.values };
-}
-
 function quoteForCmd(arg) {
   if (arg.length === 0) {
     return '""';
@@ -250,18 +240,18 @@ async function startManagedService(worktreePath, service) {
   );
   const logStream = createWriteStream(logPath, { flags: "a" });
 
-  writeLogLine(
-    { logStream },
-    `Starting ${commandSpec.label} in ${serviceWorkdir}`,
-  );
-
+  const { values: worktreeEnv } = await readEnvMap(worktreePath);
   const spawnCommand = resolveSpawnCommand(
     commandSpec.command,
-    commandSpec.args,
+    serviceArgs(service, worktreeEnv),
+  );
+  writeLogLine(
+    { logStream },
+    `Starting ${[commandSpec.command, ...serviceArgs(service, worktreeEnv)].join(" ")} in ${serviceWorkdir}`,
   );
   const child = spawn(spawnCommand.command, spawnCommand.args, {
     cwd: serviceWorkdir,
-    env: await processEnvForService(worktreePath),
+    env: { ...process.env, ...worktreeEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -318,6 +308,16 @@ async function startServiceIfStopped(worktreePath, service) {
   }
 
   const servicePort = await getServicePort(worktreePath, service);
+  if (
+    servicePort === null &&
+    SERVICE_DEFINITIONS[service].portOffset !== undefined
+  ) {
+    return {
+      ok: false,
+      message: `${service} needs a valid ${BASE_PORT_ENV} in .env`,
+      state: serviceStateSnapshot(state),
+    };
+  }
   if (servicePort && (await probePortOpen(servicePort))) {
     return {
       ok: true,
@@ -589,23 +589,8 @@ function sleep(ms) {
 }
 
 async function getServicePort(worktreePath, service) {
-  if (!PORT_SCOPED_SERVICES.has(service)) {
-    return null;
-  }
-
   const env = await readEnvMap(worktreePath);
-  const backendPortRaw = env.values.WORKTREE_APP_PORT;
-  const backendPort = backendPortRaw
-    ? Number.parseInt(backendPortRaw, 10)
-    : Number.NaN;
-  if (!Number.isFinite(backendPort)) {
-    return null;
-  }
-
-  if (service === "backend") {
-    return backendPort;
-  }
-  return backendPort + 1;
+  return servicePortFromEnv(service, env.values);
 }
 
 /**
@@ -870,6 +855,37 @@ async function firstListeningPid(port) {
   return pids[0] ?? null;
 }
 
+/**
+ * Combines what the dashboard knows about a service it manages with what it can
+ * observe on the service's port. `reachable` means the service is doing its job:
+ * its port answers, its process runs when it has no port, or a one-shot job
+ * finished cleanly.
+ */
+async function collectServiceState(service, env, state) {
+  const definition = SERVICE_DEFINITIONS[service];
+  const port = servicePortFromEnv(service, env);
+  const portOpen = port === null ? false : await probePortOpen(port);
+  const listenerPid = portOpen ? await firstListeningPid(port) : null;
+  let reachable = portOpen;
+  if (definition.oneShot) {
+    reachable =
+      !state.running &&
+      state.lastExitCode === 0 &&
+      !state.lastExitSignal &&
+      !state.lastError;
+  } else if (definition.portOffset === undefined) {
+    reachable = state.running;
+  }
+  return {
+    ...serviceStateSnapshot(state),
+    port,
+    url: definition.url && port !== null ? `http://localhost:${port}` : null,
+    portOpen,
+    listenerPid,
+    reachable,
+  };
+}
+
 async function collectWorktreeState() {
   const raw = await runGit(["worktree", "list", "--porcelain"]);
   const parsed = parseWorktreeList(raw);
@@ -881,27 +897,13 @@ async function collectWorktreeState() {
       const branch = shortBranchName(
         typeof entry.branch === "string" ? entry.branch : null,
       );
-      const backendPortRaw = env.values.WORKTREE_APP_PORT;
-      const parsedBackendPort = backendPortRaw
-        ? Number.parseInt(backendPortRaw, 10)
-        : Number.NaN;
-      const backendPort = Number.isFinite(parsedBackendPort)
-        ? parsedBackendPort
-        : null;
-      const webUiPort = backendPort === null ? null : backendPort + 1;
-      const [backendPortOpen, webUiPortOpen] = await Promise.all([
-        backendPort ? probePortOpen(backendPort) : Promise.resolve(false),
-        webUiPort ? probePortOpen(webUiPort) : Promise.resolve(false),
-      ]);
-      const [backendPid, webUiPid] = await Promise.all([
-        backendPort && backendPortOpen
-          ? firstListeningPid(backendPort)
-          : Promise.resolve(null),
-        webUiPort && webUiPortOpen
-          ? firstListeningPid(webUiPort)
-          : Promise.resolve(null),
-      ]);
       const record = getManagedRecord(worktreePath);
+      const serviceEntries = await Promise.all(
+        SERVICES.map(async (service) => [
+          service,
+          await collectServiceState(service, env.values, record[service]),
+        ]),
+      );
 
       return {
         id: worktreeIdFromPath(worktreePath),
@@ -912,19 +914,8 @@ async function collectWorktreeState() {
         isMain: branch === "main",
         envPath: env.envPath,
         envExists: env.exists,
-        backendPort: backendPort,
-        webUiPort,
-        webUiUrl: webUiPort ? `http://localhost:${webUiPort}` : null,
-        managed: {
-          backend: serviceStateSnapshot(record.backend),
-          ui: serviceStateSnapshot(record.ui),
-        },
-        observed: {
-          backendPortOpen,
-          webUiPortOpen,
-          backendPid,
-          webUiPid,
-        },
+        basePort: basePortFromEnv(env.values),
+        services: Object.fromEntries(serviceEntries),
       };
     }),
   );
@@ -983,40 +974,19 @@ function dashboardApiInfo() {
 
 function parseServiceTarget(searchParams) {
   const service = searchParams.get("service") ?? "both";
-  if (
-    service === "all" ||
-    service === "both" ||
-    service === "backend" ||
-    service === "ui"
-  ) {
-    return service;
-  }
-  return null;
+  return servicesForTarget(service) ? service : null;
 }
 
 function parseLogService(searchParams) {
   const service = searchParams.get("service") ?? "backend";
-  if (service === "backend" || service === "ui") {
-    return service;
-  }
-  return null;
+  return Object.hasOwn(SERVICE_DEFINITIONS, service) ? service : null;
 }
 
-async function withTargetServices(serviceTarget, handler) {
-  if (serviceTarget === "all") {
-    return Promise.all([handler("backend"), handler("ui")]);
-  }
-  if (serviceTarget === "both") {
-    return Promise.all([handler("backend"), handler("ui")]);
-  }
-  return [await handler(serviceTarget)];
+function withTargetServices(serviceTarget, handler) {
+  return Promise.all(servicesForTarget(serviceTarget).map(handler));
 }
 
-async function handleServiceAction(
-  worktreePath,
-  action,
-  serviceTarget,
-) {
+async function handleServiceAction(worktreePath, action, serviceTarget) {
   if (action === "start") {
     return withTargetServices(serviceTarget, async (service) =>
       startServiceIfStopped(worktreePath, service),
@@ -1086,6 +1056,8 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, {
         generatedAt: formatTimestamp(),
         dashboardPid: process.pid,
+        basePortEnv: BASE_PORT_ENV,
+        services: SERVICE_CATALOG,
         worktrees,
       });
       return;
@@ -1109,7 +1081,7 @@ const server = http.createServer(async (req, res) => {
         textResponse(
           res,
           400,
-          "service must be one of: all, backend, ui, both",
+          `service must be one of: ${SERVICE_TARGET_NAMES.join(", ")}`,
         );
         return;
       }
@@ -1192,7 +1164,11 @@ const server = http.createServer(async (req, res) => {
 
       const service = parseLogService(url.searchParams);
       if (!service) {
-        textResponse(res, 400, "service must be one of: backend, ui");
+        textResponse(
+          res,
+          400,
+          `service must be one of: ${SERVICES.join(", ")}`,
+        );
         return;
       }
 
