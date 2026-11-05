@@ -28,7 +28,6 @@ Current npm scripts:
 | `npm run tauri` | Run the Tauri CLI. Pass commands after `--`. |
 | `npm run worktree:dashboard` | Start the dashboard API with Node watch mode. |
 | `npm run worktree:mcp` | Start the dashboard MCP server. |
-| `npm run worktree:stop-services` | Ask the dashboard API to stop services for `WORKTREE_TARGET`. |
 | `npm run setup-env` | Generate the current worktree's `.env`. |
 | `npm run worktree:dashboard:ui` | Start Vite without opening a browser. Playwright uses this. |
 | `npm test` | Run the Node tests in `scripts/`. |
@@ -200,9 +199,30 @@ The included `.config/wt.toml` defines:
 
 - `pre-start`: run `node ./scripts/setup-env.mjs`, then `npm install`
 - `post-start`: run `cargo build --workspace`
-- `pre-remove`: call `scripts/stop-processes.mjs` through the dashboard API
+- `pre-remove`: run `wt service stop -s all --best-effort`, which gives up after 5
+  seconds per request and never blocks removal
+- `wt service`: an alias that manages services from the terminal
 
-The stop hook requires the dashboard API to be running.
+## Managing services from a terminal
+
+With the dashboard API running, the `wt service` alias acts on the worktree you're
+in, or on another one with `wt -C <path>`:
+
+```sh
+wt service list                   # every worktree with its ports and status
+wt service status                 # this worktree's services, with URLs
+wt service restart                # restart every service and wait for them
+wt service start -s backend       # start one service
+wt -C ../other service stop -s all
+```
+
+`start` and `restart` wait up to 600 seconds for each service to answer, print the
+log tail of any that fails, and exit with an error. Run `wt service --help` for every
+option.
+
+`wt service` runs the copy of its script in the worktree you're in, while the API
+runs the copy from the checkout you started it in. If the alias rejects a service
+the API knows, or the reverse, bring the worktree up to date and restart the API.
 
 ## MCP Server
 
@@ -235,7 +255,8 @@ Example:
 }
 ```
 
-The MCP server targets `http://127.0.0.1:4781` by default. Override with:
+The MCP server and `wt service` target `http://127.0.0.1:4781` by default. Override
+with:
 
 ```sh
 WORKTREE_DASHBOARD_URL=http://127.0.0.1:4781

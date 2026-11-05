@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { createRequestGuard, parseAllowedOrigins } from "./request-guard.mjs";
 import {
+  ALL_SELECTOR,
   BASE_PORT_ENV,
   basePortFromEnv,
   SERVICE_CATALOG,
@@ -973,7 +974,7 @@ function dashboardApiInfo() {
 }
 
 function parseServiceTarget(searchParams) {
-  const service = searchParams.get("service") ?? "both";
+  const service = searchParams.get("service") ?? ALL_SELECTOR;
   return servicesForTarget(service) ? service : null;
 }
 

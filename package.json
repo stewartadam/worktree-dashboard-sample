@@ -10,7 +10,6 @@
     "worktree:dashboard:ui": "vite",
     "worktree:dashboard": "node --watch worktree-dashboard/worktree-dashboard.mjs",
     "worktree:mcp": "node worktree-dashboard/worktree-dashboard-mcp.mjs",
-    "worktree:stop-services": "node scripts/stop-processes.mjs",
     "setup-env": "node scripts/setup-env.mjs",
     "test": "node --test scripts/*.node.test.mjs",
     "test:webui-playwright": "node scripts/run-playwright.mjs test",
