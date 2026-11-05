@@ -65,7 +65,7 @@ function worktree({
 test("worktree dashboard groups uninitialized worktrees at the bottom", async ({
   page,
 }) => {
-  await page.route("**/api/worktrees", async (route) => {
+  await page.route("**/worktree-api/worktrees", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({

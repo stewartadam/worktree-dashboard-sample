@@ -12,6 +12,7 @@ import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { createRequestGuard, parseAllowedOrigins } from "./request-guard.mjs";
 
 function readLocalEnv() {
   try {
@@ -44,6 +45,13 @@ const DASHBOARD_HOST =
   LOCAL_ENV.WORKTREE_DASHBOARD_HOST ??
   "127.0.0.1";
 const DASHBOARD_ROOT = process.cwd();
+const checkRequest = createRequestGuard({
+  dashboardHost: DASHBOARD_HOST,
+  allowedOrigins: parseAllowedOrigins(
+    process.env.WORKTREE_DASHBOARD_ALLOWED_ORIGINS ??
+      LOCAL_ENV.WORKTREE_DASHBOARD_ALLOWED_ORIGINS,
+  ),
+});
 const LOG_DIR = join(tmpdir(), "worktree-dashboard");
 const SERVICE_DEFINITIONS = {
   backend: {
@@ -939,38 +947,23 @@ async function collectWorktreeState() {
 }
 
 /** Returns headers shared by all dashboard API responses. */
-function responseHeaders(extraHeaders = {}) {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    ...extraHeaders,
-  };
-}
-
-/** Writes a JSON response with cache and CORS headers. */
+/** Writes a JSON response that browsers and proxies must not cache. */
 function jsonResponse(res, statusCode, payload) {
   const encoded = JSON.stringify(payload);
-  res.writeHead(
-    statusCode,
-    responseHeaders({
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Length": Buffer.byteLength(encoded),
-      "Cache-Control": "no-store",
-    }),
-  );
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(encoded),
+    "Cache-Control": "no-store",
+  });
   res.end(encoded);
 }
 
-/** Writes a plain text response with CORS headers. */
+/** Writes a plain text response. */
 function textResponse(res, statusCode, text) {
-  res.writeHead(
-    statusCode,
-    responseHeaders({
-      "Content-Type": "text/plain; charset=utf-8",
-      "Content-Length": Buffer.byteLength(text),
-    }),
-  );
+  res.writeHead(statusCode, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": Buffer.byteLength(text),
+  });
   res.end(text);
 }
 
@@ -1053,13 +1046,27 @@ async function isKnownWorktreePath(worktreePath) {
 const server = http.createServer(async (req, res) => {
   try {
     const method = req.method ?? "GET";
-    const url = new URL(
-      req.url ?? "/",
-      `http://${req.headers.host ?? "localhost"}`,
-    );
+    const access = checkRequest({
+      host: req.headers.host,
+      origin: req.headers.origin,
+    });
+    if (!access.allowed) {
+      textResponse(res, 403, access.reason ?? "Forbidden");
+      return;
+    }
+    if (access.corsOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", access.corsOrigin);
+      res.setHeader("Vary", "Origin");
+    }
+
+    const url = new URL(req.url ?? "/", "http://localhost");
 
     if (method === "OPTIONS") {
-      res.writeHead(204, responseHeaders());
+      if (access.corsOrigin) {
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      }
+      res.writeHead(204);
       res.end();
       return;
     }
@@ -1207,7 +1214,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
-  const url = `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`;
+  const url = `http://${DASHBOARD_HOST}:${server.address().port}`;
   console.log(`worktree dashboard listening on ${url}`);
   console.log(`API endpoint: ${url}/api/worktrees`);
   console.log(

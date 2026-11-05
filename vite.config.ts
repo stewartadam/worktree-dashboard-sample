@@ -30,15 +30,22 @@ function isTauri(): boolean {
   return process.env.TAURI_ENV_PLATFORM !== undefined;
 }
 
-/** Resolves the dashboard API base URL for direct webview requests. */
-function resolveDashboardApiBase(env: Record<string, string>): string {
-  if (env.VITE_WORKTREE_DASHBOARD_API_BASE) {
-    return env.VITE_WORKTREE_DASHBOARD_API_BASE.replace(/\/+$/u, "");
-  }
+/** Same-origin path the Vite dev server proxies to the dashboard API. */
+const DASHBOARD_PROXY_PATH = "/worktree-api";
 
+/** Resolves the dashboard API base URL the page calls. */
+function resolveDashboardApiBase(env: Record<string, string>): string {
+  return (
+    env.VITE_WORKTREE_DASHBOARD_API_BASE?.replace(/\/+$/u, "") ||
+    DASHBOARD_PROXY_PATH
+  );
+}
+
+/** Resolves the dashboard API address the dev server proxies to. */
+function resolveDashboardTarget(env: Record<string, string>): string {
   const dashboardHost = env.WORKTREE_DASHBOARD_HOST || "127.0.0.1";
   const dashboardPort = env.WORKTREE_DASHBOARD_PORT || "4781";
-  return `http://${dashboardHost}:${dashboardPort}/api`;
+  return `http://${dashboardHost}:${dashboardPort}`;
 }
 
 /** Resolves the worktree backend API base URL. */
@@ -100,6 +107,13 @@ export default defineConfig(({ mode }) => {
     plugins: [tailwindcss(), solidPlugin()],
     server: {
       port: vitePort,
+      proxy: {
+        [DASHBOARD_PROXY_PATH]: {
+          target: resolveDashboardTarget(runtimeEnv),
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(DASHBOARD_PROXY_PATH, "/api"),
+        },
+      },
     },
   };
 });

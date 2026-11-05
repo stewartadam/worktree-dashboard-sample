@@ -139,11 +139,22 @@ WORKTREE_DASHBOARD_HOST=127.0.0.1
 WORKTREE_DASHBOARD_PORT=4781
 ```
 
-or set the browser-facing API base directly:
+The page reaches the API through the Vite dev server, which proxies
+`/worktree-api` to `/api`.
+
+Because the API starts and kills local processes, it refuses any request whose
+`Host` isn't this machine, or whose `Origin` isn't a loopback address. To call it
+directly from another origin, such as a dev server opened over your LAN, list
+that origin and point the page at the API:
 
 ```sh
-VITE_WORKTREE_DASHBOARD_API_BASE=http://127.0.0.1:4781/api
+WORKTREE_DASHBOARD_ALLOWED_ORIGINS=http://192.168.1.20:3411
+VITE_WORKTREE_DASHBOARD_API_BASE=http://192.168.1.20:4781/api
 ```
+
+The hostnames of allowed origins are also accepted as `Host` values. Loopback
+origins are always allowed, so other servers on this machine can still reach the
+API.
 
 The dashboard discovers worktrees with `git worktree list`, reads each
 worktree's `.env`, and can start, stop, or recycle two managed services:
