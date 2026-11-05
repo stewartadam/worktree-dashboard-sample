@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   createWriteStream,
   existsSync,
@@ -472,7 +472,8 @@ function runGit(args) {
       reject(error);
     });
 
-    child.on("exit", (code) => {
+    // `close` waits for stdout to drain; `exit` can fire before it is fully read.
+    child.on("close", (code) => {
       if (code !== 0) {
         reject(new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`));
         return;
@@ -599,9 +600,56 @@ async function getServicePort(worktreePath, service) {
   return backendPort + 1;
 }
 
-async function findListeningPids(port) {
+/**
+ * Finds the PIDs listening on a port, leaving out this process. Each lookup
+ * method is tried until one finds a listener, and every attempt is recorded so
+ * a busy port with no known owner can explain what was tried.
+ *
+ * On macOS lsof goes first because pid-port's netstat parsing finds nothing on
+ * recent releases. On Linux lsof backs up pid-port: without `ss`, pid-port's own
+ * lsof fallback queries TCP and UDP together and fails when no UDP socket is open.
+ *
+ * @param {number} port
+ * @returns {Promise<{ pids: number[], attempts: string[] }>}
+ */
+export async function findListeningPids(port) {
+  const methods = {
+    darwin: [
+      ["lsof", lsofListeningPids],
+      ["pid-port", pidPortListeningPids],
+    ],
+    win32: [["pid-port", pidPortListeningPids]],
+  }[process.platform] ?? [
+    ["pid-port", pidPortListeningPids],
+    ["lsof", lsofListeningPids],
+  ];
+  const attempts = [];
+  for (const [name, lookup] of methods) {
+    let found;
+    try {
+      found = await lookup(port);
+    } catch (error) {
+      attempts.push(`${name}: ${error?.message ?? String(error)}`);
+      continue;
+    }
+    const pids = [...new Set(found)].filter(
+      (pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid,
+    );
+    if (pids.length > 0) {
+      return {
+        pids,
+        attempts: [...attempts, `${name}: found ${pids.join(", ")}`],
+      };
+    }
+    attempts.push(`${name}: no listeners`);
+  }
+  return { pids: [], attempts };
+}
+
+/** Lists listener PIDs through pid-port, treating "could not find" as none. */
+async function pidPortListeningPids(port) {
   const { portBindings } = await loadPidPort();
-  let bindings = [];
+  let bindings;
   try {
     bindings = await portBindings(port, { host: "*" });
   } catch (error) {
@@ -610,14 +658,37 @@ async function findListeningPids(port) {
     }
     throw error;
   }
-  const pids = new Set();
-  for (const binding of bindings) {
-    const pid = Number.parseInt(String(binding?.pid ?? ""), 10);
-    if (!Number.isFinite(pid)) continue;
-    if (pid === process.pid) continue;
-    pids.add(pid);
-  }
-  return [...pids];
+  return bindings.map((binding) =>
+    Number.parseInt(String(binding?.pid ?? ""), 10),
+  );
+}
+
+/**
+ * Lists listener PIDs with `lsof -t`, covering IPv4 and IPv6. lsof exits 1 with
+ * no output when nothing matches, which is an empty result rather than a failure.
+ */
+function lsofListeningPids(port) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "lsof",
+      ["-nP", "-t", `-iTCP:${port}`, "-sTCP:LISTEN"],
+      { timeout: 5000 },
+      (error, stdout, stderr) => {
+        const output = String(stdout).trim();
+        if (error && output.length === 0 && error.code !== 1) {
+          const detail = String(stderr).trim() || error.message;
+          reject(new Error(`lsof failed: ${detail}`));
+          return;
+        }
+        resolve(
+          output
+            .split(/\s+/u)
+            .filter(Boolean)
+            .map((pid) => Number.parseInt(pid, 10)),
+        );
+      },
+    );
+  });
 }
 
 function isMissingPortBindingsError(error, port) {
@@ -673,11 +744,11 @@ async function killPidSafe(pid, signal) {
 }
 
 async function evictExternalListeners(port) {
-  const pids = await findListeningPids(port);
+  const { pids, attempts } = await findListeningPids(port);
   if (pids.length === 0) {
     if (!(await waitForPortFree(port, 1000))) {
       throw new Error(
-        `Port ${port} is busy, but no owning process could be resolved`,
+        `Port ${port} is busy, but no listener PID was found (tried ${attempts.join("; ")})`,
       );
     }
     return {
@@ -785,16 +856,15 @@ function openServiceLog(worktreePath, service) {
   );
 }
 
+/** Returns one listener PID for an open port, or null when none can be found. */
+async function firstListeningPid(port) {
+  const { pids } = await findListeningPids(port);
+  return pids[0] ?? null;
+}
+
 async function collectWorktreeState() {
   const raw = await runGit(["worktree", "list", "--porcelain"]);
   const parsed = parseWorktreeList(raw);
-  let pidByPort = new Map();
-  try {
-    const { allPortsWithPid } = await loadPidPort();
-    pidByPort = await allPortsWithPid({ host: "*" });
-  } catch {
-    pidByPort = new Map();
-  }
 
   const collected = await Promise.all(
     parsed.map(async (entry) => {
@@ -817,10 +887,10 @@ async function collectWorktreeState() {
       ]);
       const [backendPid, webUiPid] = await Promise.all([
         backendPort && backendPortOpen
-          ? Promise.resolve(pidByPort.get(backendPort) ?? null)
+          ? firstListeningPid(backendPort)
           : Promise.resolve(null),
         webUiPort && webUiPortOpen
-          ? Promise.resolve(pidByPort.get(webUiPort) ?? null)
+          ? firstListeningPid(webUiPort)
           : Promise.resolve(null),
       ]);
       const record = getManagedRecord(worktreePath);

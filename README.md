@@ -30,7 +30,9 @@ Current npm scripts:
 | `npm run worktree:mcp` | Start the dashboard MCP server. |
 | `npm run worktree:stop-services` | Ask the dashboard API to stop services for `WORKTREE_TARGET`. |
 | `npm run setup-env` | Generate the current worktree's `.env`. |
-| `npm run test:webui-playwright` | Run the Playwright wrapper. See validation notes below. |
+| `npm run worktree:dashboard:ui` | Start Vite without opening a browser. Playwright uses this. |
+| `npm test` | Run the Node tests in `scripts/`. |
+| `npm run test:webui-playwright` | Run the Playwright tests. |
 | `npm run lint` | Run Biome checks. |
 | `npm run typecheck` | Run TypeScript project references with no emit. |
 
@@ -51,7 +53,7 @@ npm run setup-env
 `setup-env` writes:
 
 ```text
-WORKTREE_APP_PORT=<random 3000-3999 port, or supplied value>
+WORKTREE_APP_PORT=<first port of a free 10-port block in 3000-3999, or supplied value>
 VITE_APP_TITLE=Sample Worktree App (<branch>)
 PLAYWRIGHT_BROWSERS_PATH=<shared-playwright-cache>
 ```
@@ -63,6 +65,9 @@ WORKTREE_APP_PORT=3410 npm run setup-env
 ```
 
 With that value, the backend listens on `3410` and Vite listens on `3411`.
+
+Without a supplied value, `setup-env` picks a block aligned to a multiple of 10
+that overlaps no other worktree's `WORKTREE_APP_PORT`.
 
 ## Sample App
 
@@ -242,12 +247,10 @@ and accepts `backend`, `ui`, or `all`.
 Currently runnable checks:
 
 ```sh
+npm test
+npm run test:webui-playwright
 npm run lint
 npm run typecheck
 npm run build
 npm run tauri -- build --debug
 ```
-
-The Playwright wrapper exists as `npm run test:webui-playwright`, but the
-current `playwright.config.ts` references `npm run worktree:dashboard:ui`, which
-is not defined in `package.json`.

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 
 import { sharedBrowsersPath } from "./playwright-path.mjs";
 
@@ -14,8 +15,36 @@ function commandFor(base) {
   return base;
 }
 
-function randomPort() {
-  return 3000 + Math.floor(Math.random() * 1000);
+const PORT_RANGE_START = 3000;
+/**
+ * Ports reserved per worktree, starting at WORKTREE_APP_PORT: backend (+0),
+ * web UI (+1), and room for more services.
+ */
+export const PORT_BLOCK_SIZE = 10;
+const PORT_BLOCK_COUNT = 100;
+
+/**
+ * Picks a random port block in 3000-3999 whose ports no other worktree uses.
+ * Blocks are aligned to PORT_BLOCK_SIZE so ports read as worktree base plus
+ * service offset. Each taken port is assumed to own a full block starting at
+ * it, which also covers older worktrees whose ports are not aligned.
+ */
+export function pickPortBlock(takenPorts, random = Math.random) {
+  const free = [];
+  for (let block = 0; block < PORT_BLOCK_COUNT; block += 1) {
+    const base = PORT_RANGE_START + block * PORT_BLOCK_SIZE;
+    const overlaps = takenPorts.some(
+      (taken) =>
+        taken < base + PORT_BLOCK_SIZE && base < taken + PORT_BLOCK_SIZE,
+    );
+    if (!overlaps) free.push(base);
+  }
+  if (free.length === 0) {
+    throw new Error(
+      `No free ${PORT_BLOCK_SIZE}-port block between ${PORT_RANGE_START} and ${PORT_RANGE_START + PORT_BLOCK_SIZE * PORT_BLOCK_COUNT - 1}; set WORKTREE_APP_PORT explicitly`,
+    );
+  }
+  return free[Math.floor(random() * free.length)];
 }
 
 function runCapture(command, args, options = {}) {
@@ -36,7 +65,7 @@ function runCapture(command, args, options = {}) {
       stderr += String(chunk);
     });
     child.on("error", reject);
-    child.on("exit", (code, signal) => {
+    child.on("close", (code, signal) => {
       if (code === 0) {
         resolve(stdout);
         return;
@@ -64,6 +93,41 @@ async function detectBranchName() {
   return basename(process.cwd());
 }
 
+/**
+ * Lists the WORKTREE_APP_PORT of every other worktree of this repository that
+ * has a `.env`, so a new worktree can avoid their ports.
+ */
+async function otherWorktreePorts(projectRoot) {
+  let listing = "";
+  try {
+    listing = await runCapture(commandFor("git"), [
+      "-C",
+      projectRoot,
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+  } catch {
+    return [];
+  }
+  const paths = listing
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => resolve(line.slice("worktree ".length)))
+    .filter((path) => path !== resolve(projectRoot));
+  const ports = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        const env = parseEnv(await readFile(join(path, ".env"), "utf8"));
+        return Number.parseInt(env.WORKTREE_APP_PORT ?? "", 10);
+      } catch {
+        return Number.NaN;
+      }
+    }),
+  );
+  return ports.filter(Number.isFinite);
+}
+
 async function main() {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
   const projectRoot = dirname(scriptDir);
@@ -73,7 +137,7 @@ async function main() {
   const port =
     portRaw && Number.isFinite(Number(portRaw))
       ? Number.parseInt(portRaw, 10)
-      : randomPort();
+      : pickPortBlock(await otherWorktreePorts(projectRoot));
 
   const branchName = await detectBranchName();
   const appTitle = `Sample Worktree App (${branchName})`;
@@ -88,8 +152,13 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  });
+}
