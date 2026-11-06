@@ -10,9 +10,10 @@ Port detection is also available to display the PID of externally-launched backe
 The repo currently has three runtime pieces:
 
 - Sample backend: the Rust binary in `src-tauri`, run with `cargo run` from
-  `src-tauri` when it is not launched by the Tauri CLI.
-- Sample Web UI: the Solid app at `webui/index.html`, served by Vite with
-  `npm run dev`.
+  `src-tauri` when it is not launched by the Tauri CLI. It samples CPU, memory
+  and load for the host monitor.
+- Sample Web UI: the host monitor, a Solid app at `webui/index.html`, served by
+  Vite with `npm run dev`.
 - Worktree dashboard: a Node API at `worktree-dashboard/worktree-dashboard.mjs`
   plus the Solid dashboard page at `webui/worktree-dashboard.html`.
 
@@ -53,7 +54,7 @@ npm run setup-env
 
 ```text
 APP_PORT=<first port of a free 10-port block in 3000-3999, or supplied value>
-VITE_APP_TITLE=Sample Worktree App (<branch>)
+VITE_APP_TITLE=Sample App (<branch>)
 PLAYWRIGHT_BROWSERS_PATH=<shared-playwright-cache>
 ```
 
@@ -89,11 +90,16 @@ Open the sample app at the Vite root:
 http://localhost:<APP_PORT + 1>/
 ```
 
-The sample UI polls:
+The sample is a live host monitor. It polls this address every second:
 
 ```text
-http://127.0.0.1:<APP_PORT>/api/app-state
+http://127.0.0.1:<APP_PORT>/api/system
 ```
+
+Host stats are the same in every worktree. The **This backend** panel shows what
+differs: the worktree name, port, PID, uptime, request count and memory. Restarting
+a backend from the dashboard changes its PID and resets its uptime, request count and
+CPU history, which the backend keeps in memory for one minute.
 
 Set `APP_HOST` to change the host in that address, or `WORKTREE_API_BASE` to replace
 the whole base URL. The backend reads `APP_HOST` and `APP_PORT` too.
@@ -102,8 +108,11 @@ The backend also exposes:
 
 ```text
 GET /health
-GET /api/app-state
+GET /api/system
 ```
+
+Only the worktree's Web UI (`<APP_PORT + 1>`) and the desktop app can read responses
+from a browser. Requests from other origins get no CORS header.
 
 ## Dashboard
 
@@ -195,7 +204,14 @@ The Tauri config uses:
 - `frontendDist`: `../webui/dist`
 - `beforeBuildCommand`: `npm run build`
 
-Run the desktop app in development:
+Run the desktop app in development. The Tauri CLI doesn't start Vite, so start it on
+the `devUrl` port first:
+
+```sh
+APP_PORT=3030 npm run dev
+```
+
+Then, in another shell:
 
 ```sh
 npm run tauri -- dev
@@ -207,9 +223,14 @@ Build a debug app bundle:
 npm run tauri -- build --debug
 ```
 
-The Rust binary behaves differently depending on how it is launched. When the
-Tauri CLI sets `TAURI_ENV_PLATFORM`, it starts the desktop app. Without that
-environment variable, `cargo run` starts the sample backend server.
+The Rust binary depends on how it is built. The Tauri CLI enables the `desktop`
+Cargo feature through `tauri.conf.json`, which builds the desktop app. A plain
+`cargo run` leaves it off and starts the sample backend server.
+
+The desktop app also starts the backend on a background thread, using `APP_HOST` and
+`APP_PORT` from its process environment rather than `.env`, so it defaults to port
+3030. If a backend is already running on that port, the app uses that one and shows
+that backend's worktree name.
 
 ## wt Hooks
 
