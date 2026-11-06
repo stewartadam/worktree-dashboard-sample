@@ -43,7 +43,7 @@ export default defineConfig({
     baseURL,
   },
   webServer: {
-    command: `npm run worktree:dashboard:ui -- --host 127.0.0.1 --port ${webPort} --strictPort`,
+    command: `npm run dev -- --host 127.0.0.1 --port ${webPort} --strictPort`,
     url: dashboardURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

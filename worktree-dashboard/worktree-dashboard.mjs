@@ -61,6 +61,7 @@ const DASHBOARD_HOST =
   LOCAL_ENV.WORKTREE_DASHBOARD_HOST ??
   "127.0.0.1";
 const DASHBOARD_ROOT = resolve(process.cwd());
+const DEFAULT_APP_PORT = 3030;
 const FALLBACK_PRIMARY_BRANCHES = ["develop", "main"];
 let primaryBranchesPromise = null;
 const checkRequest = createRequestGuard({
@@ -1057,17 +1058,22 @@ function textResponse(res, statusCode, text) {
   res.end(text);
 }
 
+/**
+ * Returns how to reach the dashboard page, which Vite serves separately from this
+ * API. The port matches Vite's: this checkout's base port plus one, or 3031.
+ */
+function dashboardPageHint() {
+  const basePort =
+    basePortFromEnv({ ...LOCAL_ENV, ...process.env }) ?? DEFAULT_APP_PORT;
+  const pageUrl = `http://localhost:${basePort + 1}/worktree-dashboard.html`;
+  return `Dashboard page: run "npm run worktree:dashboard:ui", then open ${pageUrl}`;
+}
+
 function dashboardApiInfo() {
-  const uiPortRaw = Number.parseInt(
-    process.env.WORKTREE_DASHBOARD_UI_PORT ?? "3031",
-    10,
-  );
-  const uiPort = Number.isFinite(uiPortRaw) ? uiPortRaw : 3031;
-  const suggestedUiUrl = `http://localhost:${uiPort}/worktree-dashboard.html`;
   return [
     "worktree dashboard API",
     `API base: http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/api`,
-    `Suggested UI (via Vite): ${suggestedUiUrl}`,
+    dashboardPageHint(),
   ].join("\n");
 }
 
@@ -1467,9 +1473,7 @@ server.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
   const url = `http://${DASHBOARD_HOST}:${server.address().port}`;
   console.log(`worktree dashboard listening on ${url}`);
   console.log(`API endpoint: ${url}/api/worktrees`);
-  console.log(
-    "Start Vite and open /worktree-dashboard.html for the Solid dashboard UI.",
-  );
+  console.log(dashboardPageHint());
   console.log("Use Ctrl+C to stop this API and any managed child processes.");
 });
 

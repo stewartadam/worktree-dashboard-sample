@@ -22,14 +22,14 @@ Current npm scripts:
 
 | Script | Purpose |
 | --- | --- |
-| `npm run dev` | Start Vite and open `/worktree-dashboard.html`. |
+| `npm run dev` | Start Vite. |
 | `npm run build` | Build the Vite web UI into `webui/dist`. |
 | `npm run serve` | Preview the built Vite output. |
 | `npm run tauri` | Run the Tauri CLI. Pass commands after `--`. |
 | `npm run worktree:dashboard` | Start the dashboard API with Node watch mode. |
 | `npm run worktree:mcp` | Start the dashboard MCP server. |
 | `npm run setup-env` | Generate the current worktree's `.env`. |
-| `npm run worktree:dashboard:ui` | Start Vite without opening a browser. Playwright uses this. |
+| `npm run worktree:dashboard:ui` | Start Vite and open the dashboard page in your browser. |
 | `npm test` | Run the Node tests in `scripts/`. |
 | `npm run test:webui-playwright` | Run the Playwright tests. |
 | `npm run lint` | Run Biome checks. |
@@ -104,19 +104,22 @@ GET /api/app-state
 
 ## Dashboard
 
-Start the dashboard API:
+The dashboard has two processes: the API, and Vite, which serves the page.
+
+In VS Code, choose **Tasks: Run Task**, then **worktree dashboard: launch (ui+api)**.
+It starts both and opens the page in your browser.
+
+From a terminal, start the API, then the page in another shell:
 
 ```sh
 npm run worktree:dashboard
 ```
 
-Start Vite in another shell:
-
 ```sh
-npm run dev
+npm run worktree:dashboard:ui
 ```
 
-Open:
+The page is at:
 
 ```text
 http://localhost:<Vite port>/worktree-dashboard.html
