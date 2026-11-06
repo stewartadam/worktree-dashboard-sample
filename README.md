@@ -238,6 +238,63 @@ option.
 runs the copy from the checkout you started it in. If the alias rejects a service
 the API knows, or the reverse, bring the worktree up to date and restart the API.
 
+## Claude Code worktrees
+
+Claude Code doesn't read `.config/wt.toml`. Its `WorktreeCreate` and `WorktreeRemove`
+hooks in `.claude/settings.json` run `scripts/claude-worktree-hook.mjs`, which sends
+worktrees through `wt` so they get the same setup and cleanup. Their branches are
+named `claude/<name>` and start from `origin/HEAD`, so set it if it's missing:
+
+```sh
+git remote set-head origin --auto
+```
+
+## How it works
+
+One Node process, the dashboard API, owns the running services of every worktree.
+The page, `wt service` and the MCP server hold no service state: they ask the API for
+a snapshot and send it actions, so a service started from the terminal shows up on the
+page and an agent can stop it. The `.env` in each worktree is the contract between the
+`wt` hooks, which write it, and the API, which reads it.
+
+The API knows a service in two ways. It's managed when the API spawned the process,
+and observed when something answers on the service's port:
+
+| Managed process running | Port answers | Status |
+| --- | --- | --- |
+| Yes | Yes | managed + reachable |
+| Yes | No | managed starting/unreachable |
+| No | Yes | external process detected |
+| No | No | stopped |
+
+Managed records live in memory, so restarting the API forgets them. It stops what it
+started when it shuts down.
+
+`start` leaves an external process on a service's port running. `stop` and `recycle`
+terminate whatever listens on that port, including processes the dashboard didn't
+start.
+
+### API
+
+The API listens on `127.0.0.1:4781` by default. A worktree's ID is its absolute path,
+encoded as base64url.
+
+| Method and path | Query | Description |
+| --- | --- | --- |
+| `GET /health` | None | Returns `{"ok": true}`. |
+| `GET /api/worktrees` | None | Returns a snapshot of the service catalog and every worktree. |
+| `GET /api/events` | None | Sends the same snapshot as a `snapshot` event on connect and whenever it changes. |
+| `POST /api/worktrees` | `branch` | Creates a worktree through `wt switch`. Returns 400 for an invalid name and 409 with Worktrunk's error when it refuses. |
+| `POST /api/worktrees/<id>/start` | `service` | Starts services. Returns 400 when the worktree has no `.env`. |
+| `POST /api/worktrees/<id>/stop` | `service` | Stops services and clears their ports. |
+| `POST /api/worktrees/<id>/recycle` | `service` | Stops and starts services. |
+| `POST /api/worktrees/<id>/open-log` | `service` | Opens a service's latest log in VS Code. |
+| `POST /api/worktrees/<id>/open-editor` | None | Opens the worktree in VS Code. |
+| `POST /api/worktrees/<id>/remove` | `force` | Removes the worktree through `wt done`, or `wt remove --force` with `force=1`. Returns 409 with the reason when it keeps the worktree. |
+
+`service` is a service name or a group from `worktree-dashboard/services.mjs`, and
+defaults to `all`.
+
 ## MCP Server
 
 The MCP server lets agents inspect and manage worktrees through the dashboard
