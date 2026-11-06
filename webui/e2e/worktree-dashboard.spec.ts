@@ -65,6 +65,16 @@ function worktree({
   };
 }
 
+// Keep a dashboard API running on this machine from pushing real state over the mocks.
+test.beforeEach(async ({ page }) => {
+  await page.route("**/worktree-api/events", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "retry: 60000\n\n",
+    }),
+  );
+});
+
 /** Builds a dashboard payload holding the given worktrees. */
 function dashboardPayload(
   worktrees: ReturnType<typeof worktree>[],
@@ -79,17 +89,11 @@ function dashboardPayload(
   };
 }
 
-/** Serves one state from the worktrees endpoint and an empty event stream. */
+/** Serves one state from the worktrees endpoint. */
 async function serveWorktrees(
   page: Page,
   worktrees: ReturnType<typeof worktree>[],
 ) {
-  await page.route("**/worktree-api/events", (route) =>
-    route.fulfill({
-      contentType: "text/event-stream",
-      body: "retry: 60000\n\n",
-    }),
-  );
   await page.route("**/worktree-api/worktrees", async (route) => {
     if (route.request().method() !== "GET") {
       await route.fallback();
