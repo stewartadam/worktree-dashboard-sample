@@ -1,17 +1,35 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
+  watch,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { createRequestGuard, parseAllowedOrigins } from "./request-guard.mjs";
+import {
+  ALL_SELECTOR,
+  BASE_PORT_ENV,
+  basePortFromEnv,
+  SERVICE_CATALOG,
+  SERVICE_DEFINITIONS,
+  SERVICE_TARGET_NAMES,
+  SERVICES,
+  serviceArgs,
+  servicePortFromEnv,
+  servicesForTarget,
+  vitePortFromEnv,
+} from "./services.mjs";
+import { createStateStream } from "./state-stream.mjs";
+import { createWorktree } from "./worktree-create.mjs";
+import { removeWorktree } from "./worktree-remove.mjs";
 
 function readLocalEnv() {
   try {
@@ -43,24 +61,17 @@ const DASHBOARD_HOST =
   process.env.WORKTREE_DASHBOARD_HOST ??
   LOCAL_ENV.WORKTREE_DASHBOARD_HOST ??
   "127.0.0.1";
-const DASHBOARD_ROOT = process.cwd();
+const DASHBOARD_ROOT = resolve(process.cwd());
+const FALLBACK_PRIMARY_BRANCHES = ["develop", "main"];
+let primaryBranchesPromise = null;
+const checkRequest = createRequestGuard({
+  dashboardHost: DASHBOARD_HOST,
+  allowedOrigins: parseAllowedOrigins(
+    process.env.WORKTREE_DASHBOARD_ALLOWED_ORIGINS ??
+      LOCAL_ENV.WORKTREE_DASHBOARD_ALLOWED_ORIGINS,
+  ),
+});
 const LOG_DIR = join(tmpdir(), "worktree-dashboard");
-const SERVICE_DEFINITIONS = {
-  backend: {
-    command: process.platform === "win32" ? "cargo.exe" : "cargo",
-    workdir: "./src-tauri",
-    args: ["run"],
-    label: "cargo run",
-  },
-  ui: {
-    command: process.platform === "win32" ? "npm.cmd" : "npm",
-    args: ["run", "dev"],
-    label: "npm run dev",
-  },
-};
-const SERVICES = Object.keys(SERVICE_DEFINITIONS);
-const PORT_SCOPED_SERVICES = new Set(["backend", "ui"]);
-
 mkdirSync(LOG_DIR, { recursive: true });
 
 /** @type {Map<string, Record<string, ServiceState>>} */
@@ -189,11 +200,6 @@ function serviceStateSnapshot(state) {
   };
 }
 
-async function processEnvForService(worktreePath) {
-  const env = await readEnvMap(worktreePath);
-  return { ...process.env, ...env.values };
-}
-
 function quoteForCmd(arg) {
   if (arg.length === 0) {
     return '""';
@@ -242,18 +248,18 @@ async function startManagedService(worktreePath, service) {
   );
   const logStream = createWriteStream(logPath, { flags: "a" });
 
-  writeLogLine(
-    { logStream },
-    `Starting ${commandSpec.label} in ${serviceWorkdir}`,
-  );
-
+  const { values: worktreeEnv } = await readEnvMap(worktreePath);
   const spawnCommand = resolveSpawnCommand(
     commandSpec.command,
-    commandSpec.args,
+    serviceArgs(service, worktreeEnv),
+  );
+  writeLogLine(
+    { logStream },
+    `Starting ${[commandSpec.command, ...serviceArgs(service, worktreeEnv)].join(" ")} in ${serviceWorkdir}`,
   );
   const child = spawn(spawnCommand.command, spawnCommand.args, {
     cwd: serviceWorkdir,
-    env: await processEnvForService(worktreePath),
+    env: { ...process.env, ...worktreeEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -273,6 +279,7 @@ async function startManagedService(worktreePath, service) {
   child.on("error", (error) => {
     state.lastError = error.message;
     writeLogLine(state, `Process error: ${error.message}`);
+    stateStream.notify();
   });
 
   child.on("exit", (code, signal) => {
@@ -286,6 +293,7 @@ async function startManagedService(worktreePath, service) {
       `Exited with code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
     closeLogStream(state);
+    stateStream.notify();
   });
 
   return {
@@ -310,6 +318,16 @@ async function startServiceIfStopped(worktreePath, service) {
   }
 
   const servicePort = await getServicePort(worktreePath, service);
+  if (
+    servicePort === null &&
+    SERVICE_DEFINITIONS[service].portOffset !== undefined
+  ) {
+    return {
+      ok: false,
+      message: `${service} needs a valid ${BASE_PORT_ENV} in .env`,
+      state: serviceStateSnapshot(state),
+    };
+  }
   if (servicePort && (await probePortOpen(servicePort))) {
     return {
       ok: true,
@@ -472,7 +490,8 @@ function runGit(args) {
       reject(error);
     });
 
-    child.on("exit", (code) => {
+    // `close` waits for stdout to drain; `exit` can fire before it is fully read.
+    child.on("close", (code) => {
       if (code !== 0) {
         reject(new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`));
         return;
@@ -580,28 +599,60 @@ function sleep(ms) {
 }
 
 async function getServicePort(worktreePath, service) {
-  if (!PORT_SCOPED_SERVICES.has(service)) {
-    return null;
-  }
-
   const env = await readEnvMap(worktreePath);
-  const backendPortRaw = env.values.WORKTREE_APP_PORT;
-  const backendPort = backendPortRaw
-    ? Number.parseInt(backendPortRaw, 10)
-    : Number.NaN;
-  if (!Number.isFinite(backendPort)) {
-    return null;
-  }
-
-  if (service === "backend") {
-    return backendPort;
-  }
-  return backendPort + 1;
+  return servicePortFromEnv(service, env.values);
 }
 
-async function findListeningPids(port) {
+/**
+ * Finds the PIDs listening on a port, leaving out this process. Each lookup
+ * method is tried until one finds a listener, and every attempt is recorded so
+ * a busy port with no known owner can explain what was tried.
+ *
+ * On macOS lsof goes first because pid-port's netstat parsing finds nothing on
+ * recent releases. On Linux lsof backs up pid-port: without `ss`, pid-port's own
+ * lsof fallback queries TCP and UDP together and fails when no UDP socket is open.
+ *
+ * @param {number} port
+ * @returns {Promise<{ pids: number[], attempts: string[] }>}
+ */
+export async function findListeningPids(port) {
+  const methods = {
+    darwin: [
+      ["lsof", lsofListeningPids],
+      ["pid-port", pidPortListeningPids],
+    ],
+    win32: [["pid-port", pidPortListeningPids]],
+  }[process.platform] ?? [
+    ["pid-port", pidPortListeningPids],
+    ["lsof", lsofListeningPids],
+  ];
+  const attempts = [];
+  for (const [name, lookup] of methods) {
+    let found;
+    try {
+      found = await lookup(port);
+    } catch (error) {
+      attempts.push(`${name}: ${error?.message ?? String(error)}`);
+      continue;
+    }
+    const pids = [...new Set(found)].filter(
+      (pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid,
+    );
+    if (pids.length > 0) {
+      return {
+        pids,
+        attempts: [...attempts, `${name}: found ${pids.join(", ")}`],
+      };
+    }
+    attempts.push(`${name}: no listeners`);
+  }
+  return { pids: [], attempts };
+}
+
+/** Lists listener PIDs through pid-port, treating "could not find" as none. */
+async function pidPortListeningPids(port) {
   const { portBindings } = await loadPidPort();
-  let bindings = [];
+  let bindings;
   try {
     bindings = await portBindings(port, { host: "*" });
   } catch (error) {
@@ -610,14 +661,37 @@ async function findListeningPids(port) {
     }
     throw error;
   }
-  const pids = new Set();
-  for (const binding of bindings) {
-    const pid = Number.parseInt(String(binding?.pid ?? ""), 10);
-    if (!Number.isFinite(pid)) continue;
-    if (pid === process.pid) continue;
-    pids.add(pid);
-  }
-  return [...pids];
+  return bindings.map((binding) =>
+    Number.parseInt(String(binding?.pid ?? ""), 10),
+  );
+}
+
+/**
+ * Lists listener PIDs with `lsof -t`, covering IPv4 and IPv6. lsof exits 1 with
+ * no output when nothing matches, which is an empty result rather than a failure.
+ */
+function lsofListeningPids(port) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "lsof",
+      ["-nP", "-t", `-iTCP:${port}`, "-sTCP:LISTEN"],
+      { timeout: 5000 },
+      (error, stdout, stderr) => {
+        const output = String(stdout).trim();
+        if (error && output.length === 0 && error.code !== 1) {
+          const detail = String(stderr).trim() || error.message;
+          reject(new Error(`lsof failed: ${detail}`));
+          return;
+        }
+        resolve(
+          output
+            .split(/\s+/u)
+            .filter(Boolean)
+            .map((pid) => Number.parseInt(pid, 10)),
+        );
+      },
+    );
+  });
 }
 
 function isMissingPortBindingsError(error, port) {
@@ -673,11 +747,11 @@ async function killPidSafe(pid, signal) {
 }
 
 async function evictExternalListeners(port) {
-  const pids = await findListeningPids(port);
+  const { pids, attempts } = await findListeningPids(port);
   if (pids.length === 0) {
     if (!(await waitForPortFree(port, 1000))) {
       throw new Error(
-        `Port ${port} is busy, but no owning process could be resolved`,
+        `Port ${port} is busy, but no listener PID was found (tried ${attempts.join("; ")})`,
       );
     }
     return {
@@ -785,45 +859,110 @@ function openServiceLog(worktreePath, service) {
   );
 }
 
-async function collectWorktreeState() {
-  const raw = await runGit(["worktree", "list", "--porcelain"]);
-  const parsed = parseWorktreeList(raw);
-  let pidByPort = new Map();
+/** Reports whether a process exists; only a missing-process error means it doesn't. */
+function processAlive(pid) {
   try {
-    const { allPortsWithPid } = await loadPidPort();
-    pidByPort = await allPortsWithPid({ host: "*" });
-  } catch {
-    pidByPort = new Map();
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isMissingProcessError(error);
   }
+}
+
+/** Listener PIDs by port, reused while the process lives so lookups don't spawn lsof. */
+const listenerPidCache = new Map();
+
+/**
+ * Returns the listener PID on an open port, looking it up (a subprocess) only when
+ * the port has no cached PID or the cached process has exited.
+ */
+async function cachedListenerPid(port) {
+  const cached = listenerPidCache.get(port);
+  if (cached && processAlive(cached)) return cached;
+  const pid = (await findListeningPids(port)).pids[0] ?? null;
+  if (pid) listenerPidCache.set(port, pid);
+  else listenerPidCache.delete(port);
+  return pid;
+}
+
+/** The cached `git worktree list`, while the Git metadata watchers keep it fresh. */
+let worktreeListPromise = null;
+let worktreeMetadataWatched = false;
+
+/**
+ * Returns `git worktree list`, cached until `invalidateWorktreeList` runs, so
+ * snapshots don't spawn Git each time. Without working watchers every call asks
+ * Git, and a failed listing is never cached.
+ */
+function listWorktrees() {
+  if (!worktreeMetadataWatched) invalidateWorktreeList();
+  worktreeListPromise ??= runGit(["worktree", "list", "--porcelain"])
+    .then(parseWorktreeList)
+    .catch((error) => {
+      worktreeListPromise = null;
+      throw error;
+    });
+  return worktreeListPromise;
+}
+
+/** Drops the cached worktree list, so the next snapshot asks Git again. */
+function invalidateWorktreeList() {
+  worktreeListPromise = null;
+}
+
+/**
+ * Combines what the dashboard knows about a service it manages with what it can
+ * observe on the service's port. `reachable` means the service is doing its job:
+ * its port answers, its process runs when it has no port, or a one-shot job
+ * finished cleanly.
+ */
+async function collectServiceState(service, env, state) {
+  const definition = SERVICE_DEFINITIONS[service];
+  const port = servicePortFromEnv(service, env);
+  const portOpen = port === null ? false : await probePortOpen(port);
+  // A closed port may reopen under another process, so its cached PID can't be reused.
+  if (port !== null && !portOpen) listenerPidCache.delete(port);
+  const listenerPid = portOpen ? await cachedListenerPid(port) : null;
+  let reachable = portOpen;
+  if (definition.oneShot) {
+    reachable =
+      !state.running &&
+      state.lastExitCode === 0 &&
+      !state.lastExitSignal &&
+      !state.lastError;
+  } else if (definition.portOffset === undefined) {
+    reachable = state.running;
+  }
+  return {
+    ...serviceStateSnapshot(state),
+    port,
+    url: definition.url && port !== null ? `http://localhost:${port}` : null,
+    portOpen,
+    listenerPid,
+    reachable,
+  };
+}
+
+async function collectWorktreeState() {
+  const [parsed, primaryBranches] = await Promise.all([
+    listWorktrees(),
+    getPrimaryBranches(),
+  ]);
 
   const collected = await Promise.all(
-    parsed.map(async (entry) => {
+    parsed.map(async (entry, index) => {
       const worktreePath = String(entry.worktree);
       const env = await readEnvMap(worktreePath);
       const branch = shortBranchName(
         typeof entry.branch === "string" ? entry.branch : null,
       );
-      const backendPortRaw = env.values.WORKTREE_APP_PORT;
-      const parsedBackendPort = backendPortRaw
-        ? Number.parseInt(backendPortRaw, 10)
-        : Number.NaN;
-      const backendPort = Number.isFinite(parsedBackendPort)
-        ? parsedBackendPort
-        : null;
-      const webUiPort = backendPort === null ? null : backendPort + 1;
-      const [backendPortOpen, webUiPortOpen] = await Promise.all([
-        backendPort ? probePortOpen(backendPort) : Promise.resolve(false),
-        webUiPort ? probePortOpen(webUiPort) : Promise.resolve(false),
-      ]);
-      const [backendPid, webUiPid] = await Promise.all([
-        backendPort && backendPortOpen
-          ? Promise.resolve(pidByPort.get(backendPort) ?? null)
-          : Promise.resolve(null),
-        webUiPort && webUiPortOpen
-          ? Promise.resolve(pidByPort.get(webUiPort) ?? null)
-          : Promise.resolve(null),
-      ]);
       const record = getManagedRecord(worktreePath);
+      const serviceEntries = await Promise.all(
+        SERVICES.map(async (service) => [
+          service,
+          await collectServiceState(service, env.values, record[service]),
+        ]),
+      );
 
       return {
         id: worktreeIdFromPath(worktreePath),
@@ -834,27 +973,33 @@ async function collectWorktreeState() {
         isMain: branch === "main",
         envPath: env.envPath,
         envExists: env.exists,
-        backendPort: backendPort,
-        webUiPort,
-        webUiUrl: webUiPort ? `http://localhost:${webUiPort}` : null,
-        managed: {
-          backend: serviceStateSnapshot(record.backend),
-          ui: serviceStateSnapshot(record.ui),
-        },
-        observed: {
-          backendPortOpen,
-          webUiPortOpen,
-          backendPid,
-          webUiPid,
-        },
+        // Git lists the primary worktree first; it and the dashboard's own checkout stay.
+        canRemove: index > 0 && resolve(worktreePath) !== DASHBOARD_ROOT,
+        basePort: basePortFromEnv(env.values),
+        services: Object.fromEntries(serviceEntries),
       };
     }),
   );
-  const worktrees = collected;
+  return sortWorktrees(collected, primaryBranches);
+}
 
-  worktrees.sort((a, b) => {
-    if (a.isMain !== b.isMain) {
-      return a.isMain ? -1 : 1;
+/**
+ * Orders worktrees for display: primary branches first (in the order given),
+ * then worktrees with a `.env` before those without, then by branch name,
+ * falling back to path for detached worktrees.
+ */
+export function sortWorktrees(worktrees, primaryBranches) {
+  const primaryRank = (worktree) => {
+    const index = worktree.branch
+      ? primaryBranches.indexOf(worktree.branch)
+      : -1;
+    return index === -1 ? primaryBranches.length : index;
+  };
+
+  return [...worktrees].sort((a, b) => {
+    const rankDelta = primaryRank(a) - primaryRank(b);
+    if (rankDelta !== 0) {
+      return rankDelta;
     }
     if (a.envExists !== b.envExists) {
       return a.envExists ? -1 : 1;
@@ -864,96 +1009,85 @@ async function collectWorktreeState() {
     }
     return a.path.localeCompare(b.path);
   });
-
-  return worktrees;
 }
 
-/** Returns headers shared by all dashboard API responses. */
-function responseHeaders(extraHeaders = {}) {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    ...extraHeaders,
-  };
+/**
+ * Builds the ordered primary branch list from the remote's default branch
+ * (e.g. `origin/develop`, when known) followed by the conventional
+ * long-lived branches, without duplicates.
+ */
+export function primaryBranchesFrom(remoteHeadRef) {
+  const detected = remoteHeadRef?.trim().replace(/^[^/]+\//u, "");
+  return [...new Set([detected, ...FALLBACK_PRIMARY_BRANCHES].filter(Boolean))];
 }
 
-/** Writes a JSON response with cache and CORS headers. */
+/**
+ * Resolves the primary branches once per dashboard process. `origin/HEAD` is
+ * only set by `git clone` or `git remote set-head`, so its absence just leaves
+ * the fallback list.
+ */
+function getPrimaryBranches() {
+  primaryBranchesPromise ??= runGit([
+    "symbolic-ref",
+    "--quiet",
+    "--short",
+    "refs/remotes/origin/HEAD",
+  ])
+    .catch(() => null)
+    .then(primaryBranchesFrom);
+  return primaryBranchesPromise;
+}
+
+/** Writes a JSON response that browsers and proxies must not cache. */
 function jsonResponse(res, statusCode, payload) {
   const encoded = JSON.stringify(payload);
-  res.writeHead(
-    statusCode,
-    responseHeaders({
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Length": Buffer.byteLength(encoded),
-      "Cache-Control": "no-store",
-    }),
-  );
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(encoded),
+    "Cache-Control": "no-store",
+  });
   res.end(encoded);
 }
 
-/** Writes a plain text response with CORS headers. */
+/** Writes a plain text response. */
 function textResponse(res, statusCode, text) {
-  res.writeHead(
-    statusCode,
-    responseHeaders({
-      "Content-Type": "text/plain; charset=utf-8",
-      "Content-Length": Buffer.byteLength(text),
-    }),
-  );
+  res.writeHead(statusCode, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": Buffer.byteLength(text),
+  });
   res.end(text);
 }
 
+/** Returns how to reach the dashboard page, which Vite serves separately from this API. */
+function dashboardPageHint() {
+  const vitePort = vitePortFromEnv({ ...LOCAL_ENV, ...process.env });
+  const pageUrl = `http://localhost:${vitePort}/worktree-dashboard.html`;
+  return `Dashboard page: run "npm run worktree:dashboard:ui", then open ${pageUrl}`;
+}
+
 function dashboardApiInfo() {
-  const uiPortRaw = Number.parseInt(
-    process.env.WORKTREE_DASHBOARD_UI_PORT ?? "3031",
-    10,
-  );
-  const uiPort = Number.isFinite(uiPortRaw) ? uiPortRaw : 3031;
-  const suggestedUiUrl = `http://localhost:${uiPort}/worktree-dashboard.html`;
   return [
     "worktree dashboard API",
     `API base: http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/api`,
-    `Suggested UI (via Vite): ${suggestedUiUrl}`,
+    dashboardPageHint(),
   ].join("\n");
 }
 
 function parseServiceTarget(searchParams) {
-  const service = searchParams.get("service") ?? "both";
-  if (
-    service === "all" ||
-    service === "both" ||
-    service === "backend" ||
-    service === "ui"
-  ) {
-    return service;
-  }
-  return null;
+  const service = searchParams.get("service") ?? ALL_SELECTOR;
+  return servicesForTarget(service) ? service : null;
 }
 
 function parseLogService(searchParams) {
-  const service = searchParams.get("service") ?? "backend";
-  if (service === "backend" || service === "ui") {
-    return service;
-  }
-  return null;
+  const service = searchParams.get("service") ?? SERVICES[0];
+  return Object.hasOwn(SERVICE_DEFINITIONS, service) ? service : null;
 }
 
-async function withTargetServices(serviceTarget, handler) {
-  if (serviceTarget === "all") {
-    return Promise.all([handler("backend"), handler("ui")]);
-  }
-  if (serviceTarget === "both") {
-    return Promise.all([handler("backend"), handler("ui")]);
-  }
-  return [await handler(serviceTarget)];
+function withTargetServices(serviceTarget, handler) {
+  return Promise.all(servicesForTarget(serviceTarget).map(handler));
 }
 
-async function handleServiceAction(
-  worktreePath,
-  action,
-  serviceTarget,
-) {
+async function handleServiceAction(worktreePath, action, serviceTarget) {
   if (action === "start") {
     return withTargetServices(serviceTarget, async (service) =>
       startServiceIfStopped(worktreePath, service),
@@ -980,16 +1114,149 @@ async function isKnownWorktreePath(worktreePath) {
   return current.some((entry) => entry.path === worktreePath);
 }
 
+async function findKnownWorktree(worktreePath) {
+  const current = await collectWorktreeState();
+  return current.find((entry) => entry.path === worktreePath);
+}
+
+/** Parses the `force` flag that lets removal discard local changes and unmerged work. */
+function parseForce(searchParams) {
+  const force = searchParams.get("force");
+  return force === "1" || force?.toLowerCase() === "true";
+}
+
+/**
+ * Closes a removed worktree's service logs and drops its managed-process record.
+ * A record with a child still running (its stop timed out) is kept, so its log
+ * stream stays open for the child's output and shutdown can still kill it.
+ */
+function forgetManagedRecord(worktreePath) {
+  const record = managedServices.get(worktreePath);
+  if (!record) return;
+  if (SERVICES.some((service) => record[service].running)) return;
+  for (const service of SERVICES) {
+    closeLogStream(record[service]);
+  }
+  managedServices.delete(worktreePath);
+}
+
+/** Builds the snapshot the page shows and the event stream sends. */
+async function dashboardSnapshot() {
+  return {
+    generatedAt: formatTimestamp(),
+    dashboardPid: process.pid,
+    basePortEnv: BASE_PORT_ENV,
+    services: SERVICE_CATALOG,
+    worktrees: await collectWorktreeState(),
+  };
+}
+
+const stateStream = createStateStream({
+  collect: dashboardSnapshot,
+  /** Checks fast while a managed service runs but isn't reachable yet, i.e. is starting. */
+  needsFastChecks: (snapshot) =>
+    snapshot.worktrees.some((worktree) =>
+      SERVICES.some(
+        (service) =>
+          worktree.services[service].running &&
+          !worktree.services[service].reachable,
+      ),
+    ),
+  /** Logs a failed snapshot; the stream retries on its next timed check. */
+  onError: (error) =>
+    console.error("Failed to refresh the dashboard event stream:", error),
+});
+
+/**
+ * Watches Git's metadata for worktrees being added or removed and for branch
+ * switches (each worktree's HEAD), dropping the cached worktree list and pushing a
+ * new snapshot. Index and ref updates are ignored, since they don't change the list.
+ * Linked worktrees live under `<common dir>/worktrees`, which Git creates with the
+ * first one, so that watch is retried whenever the top-level watch fires.
+ */
+async function watchWorktreeMetadata() {
+  const commonDir = resolve(
+    DASHBOARD_ROOT,
+    (await runGit(["rev-parse", "--git-common-dir"])).trim(),
+  );
+  /** Invalidates the worktree list and tells the stream something changed. */
+  const changed = () => {
+    invalidateWorktreeList();
+    stateStream.notify();
+  };
+  let worktreesWatcher = null;
+  /**
+   * (Re)starts the recursive watch on linked worktrees' metadata. Git deletes the
+   * folder with the last linked worktree and recreates it with the next, and a watch
+   * on a deleted folder goes silent, so each top-level event for it starts over.
+   */
+  const watchLinkedWorktrees = () => {
+    worktreesWatcher?.close();
+    worktreesWatcher = null;
+    try {
+      worktreesWatcher = watch(
+        join(commonDir, "worktrees"),
+        { recursive: true, persistent: false },
+        /** Reacts to worktree folders appearing or vanishing and to HEAD changes. */
+        (_event, filename) => {
+          const name = String(filename ?? "").replaceAll("\\", "/");
+          // `<name>` is a worktree being added or removed; `<name>/HEAD` a branch switch.
+          if (!name.includes("/") || name.endsWith("/HEAD")) changed();
+        },
+      );
+      /** Drops a broken watch; the next top-level event for the folder restarts it. */
+      worktreesWatcher.on("error", () => {
+        worktreesWatcher?.close();
+        worktreesWatcher = null;
+      });
+    } catch {
+      worktreesWatcher = null;
+    }
+  };
+  watch(
+    commonDir,
+    { persistent: false },
+    /** Follows the main worktree's HEAD and the linked-worktrees folder coming and going. */
+    (_event, filename) => {
+      if (filename === "worktrees") watchLinkedWorktrees();
+      if (filename === "HEAD" || filename === "worktrees") changed();
+    },
+  );
+  watchLinkedWorktrees();
+  worktreeMetadataWatched = true;
+}
+
+watchWorktreeMetadata().catch((error) => {
+  console.warn(
+    "Could not watch Git metadata; worktree changes appear on manual refresh:",
+    error,
+  );
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     const method = req.method ?? "GET";
-    const url = new URL(
-      req.url ?? "/",
-      `http://${req.headers.host ?? "localhost"}`,
-    );
+    const access = checkRequest({
+      host: req.headers.host,
+      origin: req.headers.origin,
+    });
+    if (!access.allowed) {
+      textResponse(res, 403, access.reason ?? "Forbidden");
+      return;
+    }
+    if (access.corsOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", access.corsOrigin);
+      res.setHeader("Vary", "Origin");
+    }
+
+    const url = new URL(req.url ?? "/", "http://localhost");
 
     if (method === "OPTIONS") {
-      res.writeHead(204, responseHeaders());
+      if (access.corsOrigin) {
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      }
+      res.writeHead(204);
       res.end();
       return;
     }
@@ -1005,11 +1272,69 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === "GET" && url.pathname === "/api/worktrees") {
-      const worktrees = await collectWorktreeState();
-      jsonResponse(res, 200, {
-        generatedAt: formatTimestamp(),
-        dashboardPid: process.pid,
-        worktrees,
+      jsonResponse(res, 200, await dashboardSnapshot());
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/events") {
+      await stateStream.addClient(req, res);
+      return;
+    }
+
+    if (method === "POST") {
+      // Every POST can change what the snapshot shows; report it once it's answered.
+      res.once("finish", () => stateStream.notify());
+    }
+
+    if (method === "POST" && url.pathname === "/api/worktrees") {
+      const result = await createWorktree({
+        branch: url.searchParams.get("branch") ?? "",
+        root: DASHBOARD_ROOT,
+      });
+      invalidateWorktreeList();
+      const status = result.ok ? 200 : result.reason === "invalid" ? 400 : 409;
+      jsonResponse(res, status, result);
+      return;
+    }
+
+    const removeMatch = url.pathname.match(
+      /^\/api\/worktrees\/([^/]+)\/remove$/u,
+    );
+
+    if (method === "POST" && removeMatch) {
+      const [, worktreeId] = removeMatch;
+      const worktreePath = pathFromWorktreeId(worktreeId);
+      const worktree = worktreePath
+        ? await findKnownWorktree(worktreePath)
+        : undefined;
+
+      if (!worktree) {
+        textResponse(res, 404, "Unknown worktree id");
+        return;
+      }
+      if (!worktree.canRemove) {
+        textResponse(
+          res,
+          400,
+          "The primary worktree and the checkout running the dashboard can't be removed",
+        );
+        return;
+      }
+
+      const result = await removeWorktree({
+        worktreePath,
+        branch: worktree.branch,
+        force: parseForce(url.searchParams),
+        root: DASHBOARD_ROOT,
+      });
+      invalidateWorktreeList();
+      // A failed removal can still have deleted the worktree before erroring.
+      if (result.ok || !(await isKnownWorktreePath(worktreePath))) {
+        forgetManagedRecord(worktreePath);
+      }
+      jsonResponse(res, result.ok ? 200 : 409, {
+        ...result,
+        action: "remove",
       });
       return;
     }
@@ -1032,7 +1357,7 @@ const server = http.createServer(async (req, res) => {
         textResponse(
           res,
           400,
-          "service must be one of: all, backend, ui, both",
+          `service must be one of: ${SERVICE_TARGET_NAMES.join(", ")}`,
         );
         return;
       }
@@ -1115,7 +1440,11 @@ const server = http.createServer(async (req, res) => {
 
       const service = parseLogService(url.searchParams);
       if (!service) {
-        textResponse(res, 400, "service must be one of: backend, ui");
+        textResponse(
+          res,
+          400,
+          `service must be one of: ${SERVICES.join(", ")}`,
+        );
         return;
       }
 
@@ -1137,17 +1466,16 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
-  const url = `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`;
+  const url = `http://${DASHBOARD_HOST}:${server.address().port}`;
   console.log(`worktree dashboard listening on ${url}`);
   console.log(`API endpoint: ${url}/api/worktrees`);
-  console.log(
-    "Start Vite and open /worktree-dashboard.html for the Solid dashboard UI.",
-  );
+  console.log(dashboardPageHint());
   console.log("Use Ctrl+C to stop this API and any managed child processes.");
 });
 
 function shutdown(signal) {
   console.log(`Received ${signal}, stopping managed processes...`);
+  stateStream.close();
 
   for (const [worktreePath, services] of managedServices.entries()) {
     for (const service of SERVICES) {

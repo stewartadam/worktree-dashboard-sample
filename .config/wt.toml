@@ -1,12 +1,16 @@
 [aliases]
-stop-all-services = "WORKTREE_TARGET={{ managed_worktree_path | default(worktree_path) }} node ./scripts/stop-processes.mjs"
+done = "node {{ worktree_path }}/scripts/worktree-done.mjs {{ args }}"
+service = "node {{ worktree_path }}/worktree-dashboard/worktree-service.mjs --worktree={{ worktree_path }} {{ args }}"
 
+# Runs alone, because the steps after it read the port.
 [[pre-start]]
 setup-env = "node ./scripts/setup-env.mjs"
+
+[[pre-start]]
 install = "npm install"
 
 [[post-start]]
 build = "cargo build --workspace"
 
 [pre-remove]
-stop-services = "wt step stop-all-services --managed-worktree-path={{ worktree_path }} --yes"
+stop-services = "wt -C {{ worktree_path }} --yes service stop -s all --best-effort"

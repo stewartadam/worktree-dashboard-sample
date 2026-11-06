@@ -20,8 +20,8 @@ pub fn run_tauri() {
 }
 
 pub fn run_backend() {
-    let host = std::env::var("WORKTREE_APP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("WORKTREE_APP_PORT")
+    let host = std::env::var("APP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = std::env::var("APP_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(3030);
