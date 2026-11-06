@@ -396,3 +396,29 @@ test("pushed snapshots update the table, and older ones are ignored", async ({
   await expect(page.locator("strong", { hasText: "second" })).toBeVisible();
   await expect(page.locator("strong", { hasText: "stale" })).toHaveCount(0);
 });
+
+test("the header keeps refresh inline with its status line", async ({
+  page,
+}) => {
+  await serveWorktrees(page, [
+    worktree({ branch: "feature", envExists: true, port: 3080 }),
+    worktree({ branch: "other", envExists: true, port: 3090 }),
+  ]);
+  let refreshes = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/worktree-api/worktrees")) refreshes += 1;
+  });
+  await page.goto("/worktree-dashboard.html");
+
+  const header = page.locator("header");
+  await expect(header).toContainText("2 Worktrees");
+  await expect(header).not.toContainText("Online");
+  await expect(header.getByRole("link")).toHaveCount(0);
+
+  await expect.poll(() => refreshes).toBe(1);
+  await header.getByRole("button", { name: "Refresh" }).click();
+  await expect.poll(() => refreshes).toBe(2);
+
+  await page.getByRole("searchbox", { name: "Search worktrees" }).fill("other");
+  await expect(header).toContainText("1 of 2 Worktrees");
+});

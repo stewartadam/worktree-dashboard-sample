@@ -296,7 +296,10 @@ function WorktreeDashboardApp() {
     if (!hasPayload()) {
       return "Waiting for dashboard state...";
     }
-    return `Updated ${new Date(payload.generatedAt).toLocaleTimeString()} | Dashboard PID ${payload.dashboardPid} | ${visibleWorktrees().length} of ${payload.worktrees.length} Worktrees`;
+    const total = payload.worktrees.length;
+    const shown = visibleWorktrees().length;
+    const count = shown === total ? `${total}` : `${shown} of ${total}`;
+    return `Updated ${new Date(payload.generatedAt).toLocaleTimeString()} | API PID ${payload.dashboardPid} | ${count} Worktrees`;
   });
 
   function serviceLabel(service: ServiceTarget): string {
@@ -1045,57 +1048,43 @@ function WorktreeDashboardApp() {
           <h1 class="mt-2 text-xl font-semibold text-slate-900 md:text-2xl dark:text-slate-100">
             Sample multi-worktree dashboard
           </h1>
-          <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            {metadataText()}
+          <p class="mt-1 flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
+            <span>{metadataText()}</span>
+            <button
+              type="button"
+              class="inline-flex items-center justify-center rounded p-0.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+              title="Refresh"
+              aria-label="Refresh"
+              onClick={() => void refresh()}
+              disabled={loading()}
+            >
+              <HeroIcon
+                icon="arrow-path"
+                class={`size-3.5 ${loading() ? "animate-spin" : ""}`}
+              />
+            </button>
           </p>
-          <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-300">
-            <span class="inline-flex items-center gap-1.5">
-              <span class="size-2.5 rounded-full bg-emerald-500" />
-              Online
-            </span>
-            <span class="inline-flex items-center gap-1.5">
-              <span class="size-2.5 rounded-full bg-rose-500" />
-              Offline
-            </span>
-          </div>
         </div>
-        <div class="mt-3 flex items-center gap-2 md:mt-0">
-          <button
-            type="button"
-            class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-500 dark:hover:bg-slate-700"
-            onClick={() => void refresh()}
-            disabled={loading()}
-          >
-            <HeroIcon icon="arrow-path" class="size-4 text-slate-500" />
-            Refresh
-          </button>
-          <a
-            href="/"
-            class="inline-flex items-center gap-2 rounded-lg border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 dark:border-slate-500 dark:bg-slate-700 dark:hover:bg-slate-600"
-          >
-            <HeroIcon
-              icon="arrow-right-on-rectangle"
-              class="size-4 text-white"
-            />
-            Sample App
-          </a>
-        </div>
+        <input
+          type="search"
+          aria-label="Search worktrees"
+          placeholder="Search branch or path"
+          class="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none md:mt-0 md:w-80 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+          value={searchQuery()}
+          onInput={(event) => {
+            // A filtered-out row would leave its open menu anchored to nothing.
+            setOpenActionMenu(null);
+            setOpenActionMenuAnchor(null);
+            setSearchQuery(event.currentTarget.value);
+          }}
+          onKeyDown={(event) => {
+            // Shift+Enter creates a worktree for the typed branch.
+            if (event.key !== "Enter" || !event.shiftKey) return;
+            event.preventDefault();
+            void createWorktreeForBranch();
+          }}
+        />
       </header>
-
-      <input
-        type="search"
-        aria-label="Search worktrees"
-        placeholder="Search branch or path"
-        class="mb-4 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-        value={searchQuery()}
-        onInput={(event) => setSearchQuery(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          // Shift+Enter creates a worktree for the typed branch.
-          if (event.key !== "Enter" || !event.shiftKey) return;
-          event.preventDefault();
-          void createWorktreeForBranch();
-        }}
-      />
 
       <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
         <div class="overflow-x-auto">
@@ -1338,13 +1327,13 @@ function WorktreeDashboardApp() {
             visibleWorktrees().length === 0
           }
         >
-          <div class="px-4 pt-4 text-center text-sm text-slate-500 dark:text-slate-400">
+          <div class="p-4 text-center text-sm text-slate-500 dark:text-slate-400">
             No worktrees match "{searchQuery().trim()}".
           </div>
         </Show>
         <Show when={hasPayload() && branchToCreate()}>
           {(branch) => (
-            <div class="flex flex-col items-center gap-1.5 px-4 py-4">
+            <div class="flex flex-col items-center gap-1.5 border-t border-slate-200 px-4 py-4 dark:border-slate-700">
               <button
                 type="button"
                 class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-500 dark:hover:bg-slate-700"
