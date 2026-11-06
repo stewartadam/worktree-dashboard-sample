@@ -50,7 +50,8 @@ jobs:
 
   e2e:
     name: Playwright
-    runs-on: ubuntu-latest
+    # Playwright 1.60 can't install browsers on Ubuntu 26.04, which is ubuntu-latest.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
