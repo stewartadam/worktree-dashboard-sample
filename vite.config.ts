@@ -41,7 +41,7 @@ const DASHBOARD_PROXY_PATH = "/worktree-api";
 /** Resolves the dashboard API base URL the page calls. */
 function resolveDashboardApiBase(env: Record<string, string>): string {
   return (
-    env.VITE_WORKTREE_DASHBOARD_API_BASE?.replace(/\/+$/u, "") ||
+    env.WORKTREE_DASHBOARD_API_BASE?.replace(/\/+$/u, "") ||
     DASHBOARD_PROXY_PATH
   );
 }

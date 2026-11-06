@@ -154,7 +154,7 @@ that origin and point the page at the API:
 
 ```sh
 WORKTREE_DASHBOARD_ALLOWED_ORIGINS=http://192.168.1.20:3411
-VITE_WORKTREE_DASHBOARD_API_BASE=http://192.168.1.20:4781/api
+WORKTREE_DASHBOARD_API_BASE=http://192.168.1.20:4781/api
 ```
 
 The hostnames of allowed origins are also accepted as `Host` values. Loopback
