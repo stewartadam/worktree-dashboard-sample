@@ -377,6 +377,11 @@ Available MCP tools:
 of `start`, `stop`, or `recycle`. `services` defaults to `["all"]` and accepts any
 service or group from `worktree-dashboard/services.mjs`.
 
+Pass the full `path` returned by `dashboard_list_worktrees` as `worktree`, not a
+branch name or ID. The MCP server resolves that path to the dashboard's worktree
+ID before sending the action. Unknown paths are rejected with the known paths.
+Restart your MCP client connection after updating the MCP server code.
+
 ## Validation
 
 Currently runnable checks:

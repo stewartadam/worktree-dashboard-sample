@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "worktree-dashboard": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/worktree-dashboard/worktree-dashboard-mcp.mjs"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "WORKTREE_DASHBOARD_URL": "http://127.0.0.1:4781"
+      }
+    }
+  }
+}
