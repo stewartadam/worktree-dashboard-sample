@@ -1,17 +1,18 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Sample Worktree App",
+  "productName": "Sample App",
   "version": "0.1.0",
   "identifier": "com.example.worktree-dashboard",
   "build": {
     "frontendDist": "../webui/dist",
     "devUrl": "http://localhost:3031/",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build",
+    "features": ["desktop"]
   },
   "app": {
     "windows": [
       {
-        "title": "Sample Worktree App",
+        "title": "Sample App",
         "width": 1280,
         "height": 800,
         "resizable": true,

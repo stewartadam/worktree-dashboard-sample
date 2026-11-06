@@ -106,7 +106,12 @@ export default defineConfig(({ mode }) => {
       __WORKTREE_DASHBOARD_API_BASE__: JSON.stringify(
         resolveDashboardApiBase(runtimeEnv),
       ),
-      __WORKTREE_API_BASE__: JSON.stringify(resolveWorktreeApiBase(runtimeEnv)),
+      // The desktop app's backend reads only its process env, not .env.
+      __WORKTREE_API_BASE__: JSON.stringify(
+        resolveWorktreeApiBase(
+          tauri ? (process.env as Record<string, string>) : runtimeEnv,
+        ),
+      ),
     },
     plugins: [tailwindcss(), solidPlugin()],
     server: {

@@ -14,6 +14,11 @@ rust-version = "1.77.2"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Set by tauri.conf.json, so the Tauri CLI builds the desktop app and a plain
+# `cargo run` builds the standalone backend.
+desktop = []
+
 [build-dependencies]
 tauri-build = { version = "2.6.2", features = [] }
 
@@ -21,5 +26,6 @@ tauri-build = { version = "2.6.2", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"

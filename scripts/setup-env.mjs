@@ -141,7 +141,7 @@ async function main() {
       : pickPortBlock(await otherWorktreePorts(projectRoot));
 
   const branchName = await detectBranchName();
-  const appTitle = `Sample Worktree App (${branchName})`;
+  const appTitle = `Sample App (${branchName})`;
 
   await writeFile(
     envFile,

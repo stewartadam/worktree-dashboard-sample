@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    if std::env::var_os("TAURI_ENV_PLATFORM").is_some() {
+    if cfg!(feature = "desktop") {
         app_lib::run_tauri();
     } else {
         app_lib::run_backend();
