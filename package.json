@@ -7,6 +7,7 @@
     "build": "vite build",
     "serve": "vite preview",
     "dev": "vite --open /worktree-dashboard.html",
+    "worktree:dashboard:ui": "vite",
     "worktree:dashboard": "node --watch worktree-dashboard/worktree-dashboard.mjs",
     "worktree:mcp": "node worktree-dashboard/worktree-dashboard-mcp.mjs",
     "worktree:stop-services": "node scripts/stop-processes.mjs",
