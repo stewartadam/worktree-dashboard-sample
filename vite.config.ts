@@ -55,7 +55,7 @@ function resolveWorktreeApiBase(env: Record<string, string>): string {
   }
 
   const appHost = env.WORKTREE_APP_HOST || "127.0.0.1";
-  const appPort = env.WORKTREE_APP_PORT || "3030";
+  const appPort = env.APP_PORT || "3030";
   return `http://${appHost}:${appPort}/api`;
 }
 
@@ -69,6 +69,7 @@ const appCopyright = formatCopyrightForHtml(
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, resolve(__dirname), [
+    "APP_PORT",
     "WORKTREE_APP_",
     "WORKTREE_DASHBOARD_",
     "VITE_",
@@ -81,7 +82,7 @@ export default defineConfig(({ mode }) => {
 
   const defaultVitePort = 3031;
   const vitePort =
-    (tauri ? undefined : Number(env.WORKTREE_APP_PORT) + 1) || defaultVitePort;
+    (tauri ? undefined : Number(env.APP_PORT) + 1) || defaultVitePort;
 
   return {
     root: "./webui",

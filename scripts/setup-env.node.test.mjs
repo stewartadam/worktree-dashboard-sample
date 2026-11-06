@@ -39,5 +39,5 @@ test("pickPortBlock never overlaps a taken block", () => {
 
 test("pickPortBlock fails with a remedy when every block is taken", () => {
   const everyBlock = Array.from({ length: 100 }, (_, i) => 3000 + i * 10);
-  assert.throws(() => pickPortBlock(everyBlock), /set WORKTREE_APP_PORT/);
+  assert.throws(() => pickPortBlock(everyBlock), /set APP_PORT/);
 });

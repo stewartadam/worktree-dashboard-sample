@@ -31,7 +31,7 @@ function fixture(t) {
   writeFileSync(userConfig, "");
   writeFileSync(
     projectConfig,
-    '[[pre-start]]\nsetup-env = "echo WORKTREE_APP_PORT=4000 > .env"\n',
+    '[[pre-start]]\nsetup-env = "echo APP_PORT=4000 > .env"\n',
   );
   // Git hooks export repository selectors, and a Claude Code session exports
   // CLAUDE_PROJECT_DIR, which the script prefers over `cwd`; inheriting either would
@@ -102,7 +102,7 @@ test("WorktreeCreate creates the branch through wt and prints the initialized pa
   assert.equal(path.split("\n").length, 1);
   assert.equal(
     readFileSync(join(path, ".env"), "utf8").trim(),
-    "WORKTREE_APP_PORT=4000",
+    "APP_PORT=4000",
   );
   assert.equal(f.git(path, "branch", "--show-current"), "claude/feature");
   assert.equal(

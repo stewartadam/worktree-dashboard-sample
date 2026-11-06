@@ -35,7 +35,7 @@ function platformCommand(name, windowsSuffix) {
   return process.platform === "win32" ? `${name}${windowsSuffix}` : name;
 }
 
-export const BASE_PORT_ENV = "WORKTREE_APP_PORT";
+export const BASE_PORT_ENV = "APP_PORT";
 
 export const SERVICE_DEFINITIONS = {
   backend: {

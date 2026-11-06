@@ -17,7 +17,7 @@ function commandFor(base) {
 
 const PORT_RANGE_START = 3000;
 /**
- * Ports reserved per worktree, starting at WORKTREE_APP_PORT: backend (+0),
+ * Ports reserved per worktree, starting at APP_PORT: backend (+0),
  * web UI (+1), and room for more services.
  */
 export const PORT_BLOCK_SIZE = 10;
@@ -41,7 +41,7 @@ export function pickPortBlock(takenPorts, random = Math.random) {
   }
   if (free.length === 0) {
     throw new Error(
-      `No free ${PORT_BLOCK_SIZE}-port block between ${PORT_RANGE_START} and ${PORT_RANGE_START + PORT_BLOCK_SIZE * PORT_BLOCK_COUNT - 1}; set WORKTREE_APP_PORT explicitly`,
+      `No free ${PORT_BLOCK_SIZE}-port block between ${PORT_RANGE_START} and ${PORT_RANGE_START + PORT_BLOCK_SIZE * PORT_BLOCK_COUNT - 1}; set APP_PORT explicitly`,
     );
   }
   return free[Math.floor(random() * free.length)];
@@ -94,7 +94,7 @@ async function detectBranchName() {
 }
 
 /**
- * Lists the WORKTREE_APP_PORT of every other worktree of this repository that
+ * Lists the APP_PORT of every other worktree of this repository that
  * has a `.env`, so a new worktree can avoid their ports.
  */
 async function otherWorktreePorts(projectRoot) {
@@ -119,7 +119,7 @@ async function otherWorktreePorts(projectRoot) {
     paths.map(async (path) => {
       try {
         const env = parseEnv(await readFile(join(path, ".env"), "utf8"));
-        return Number.parseInt(env.WORKTREE_APP_PORT ?? "", 10);
+        return Number.parseInt(env.APP_PORT ?? "", 10);
       } catch {
         return Number.NaN;
       }
@@ -133,7 +133,7 @@ async function main() {
   const projectRoot = dirname(scriptDir);
   const envFile = join(projectRoot, ".env");
 
-  const portRaw = process.env.WORKTREE_APP_PORT?.trim();
+  const portRaw = process.env.APP_PORT?.trim();
   const port =
     portRaw && Number.isFinite(Number(portRaw))
       ? Number.parseInt(portRaw, 10)
@@ -144,11 +144,11 @@ async function main() {
 
   await writeFile(
     envFile,
-    `WORKTREE_APP_PORT=${port}\nVITE_APP_TITLE=${appTitle}\nPLAYWRIGHT_BROWSERS_PATH=${sharedBrowsersPath}\n`,
+    `APP_PORT=${port}\nVITE_APP_TITLE=${appTitle}\nPLAYWRIGHT_BROWSERS_PATH=${sharedBrowsersPath}\n`,
     "utf8",
   );
   process.stdout.write(
-    `OK: Generated ${envFile} with WORKTREE_APP_PORT=${port}\n`,
+    `OK: Generated ${envFile} with APP_PORT=${port}\n`,
   );
 }
 

@@ -52,7 +52,7 @@ npm run setup-env
 `setup-env` writes:
 
 ```text
-WORKTREE_APP_PORT=<first port of a free 10-port block in 3000-3999, or supplied value>
+APP_PORT=<first port of a free 10-port block in 3000-3999, or supplied value>
 VITE_APP_TITLE=Sample Worktree App (<branch>)
 PLAYWRIGHT_BROWSERS_PATH=<shared-playwright-cache>
 ```
@@ -60,13 +60,13 @@ PLAYWRIGHT_BROWSERS_PATH=<shared-playwright-cache>
 Pin a specific app base port when needed:
 
 ```sh
-WORKTREE_APP_PORT=3410 npm run setup-env
+APP_PORT=3410 npm run setup-env
 ```
 
 With that value, the backend listens on `3410` and Vite listens on `3411`.
 
 Without a supplied value, `setup-env` picks a block aligned to a multiple of 10
-that overlaps no other worktree's `WORKTREE_APP_PORT`.
+that overlaps no other worktree's `APP_PORT`.
 
 ## Sample App
 
@@ -86,13 +86,13 @@ npm run dev
 Open the sample app at the Vite root:
 
 ```text
-http://localhost:<WORKTREE_APP_PORT + 1>/
+http://localhost:<APP_PORT + 1>/
 ```
 
 The sample UI polls:
 
 ```text
-http://127.0.0.1:<WORKTREE_APP_PORT>/api/app-state
+http://127.0.0.1:<APP_PORT>/api/app-state
 ```
 
 The backend also exposes:
@@ -125,8 +125,8 @@ The page is at:
 http://localhost:<Vite port>/worktree-dashboard.html
 ```
 
-If `.env` contains `WORKTREE_APP_PORT`, the Vite port is
-`WORKTREE_APP_PORT + 1`. Without `.env`, Vite defaults to `3031`.
+If `.env` contains `APP_PORT`, the Vite port is
+`APP_PORT + 1`. Without `.env`, Vite defaults to `3031`.
 
 The dashboard API defaults to:
 

@@ -83,7 +83,7 @@ function dashboardPayload(
   return {
     generatedAt,
     dashboardPid: 12345,
-    basePortEnv: "WORKTREE_APP_PORT",
+    basePortEnv: "APP_PORT",
     services: SERVICE_CATALOG,
     worktrees,
   };
@@ -115,7 +115,7 @@ test("worktree dashboard groups uninitialized worktrees at the bottom", async ({
       body: JSON.stringify({
         generatedAt: new Date("2026-05-29T12:00:00Z").toISOString(),
         dashboardPid: 12345,
-        basePortEnv: "WORKTREE_APP_PORT",
+        basePortEnv: "APP_PORT",
         services: SERVICE_CATALOG,
         worktrees: [
           worktree({
