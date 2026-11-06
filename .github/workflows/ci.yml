@@ -19,6 +19,25 @@ env:
   WORKTRUNK_VERSION: "0.81.0"
 
 jobs:
+  changes:
+    name: Detect Rust changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src-tauri/**'
+              - '.github/workflows/ci.yml'
+
   check:
     name: Lint, typecheck, build, and test
     runs-on: ubuntu-latest
@@ -75,6 +94,11 @@ jobs:
 
   tauri:
     name: Check the Rust backend
+    needs: changes
+    # Skip at the job level, not with `paths:` on the workflow. A skipped job
+    # satisfies a required check, but a workflow that never runs leaves it
+    # pending forever. If detection fails, run the job rather than skip it.
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
