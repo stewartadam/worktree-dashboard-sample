@@ -10,6 +10,7 @@ import {
   serviceArgs,
   servicePortFromEnv,
   servicesForTarget,
+  vitePortFromEnv,
 } from "../worktree-dashboard/services.mjs";
 import { PORT_BLOCK_SIZE } from "./setup-env.mjs";
 
@@ -17,6 +18,11 @@ test("service ports are the base port plus their offset", () => {
   const env = { [BASE_PORT_ENV]: "3410" };
   assert.equal(servicePortFromEnv("backend", env), 3410);
   assert.equal(servicePortFromEnv("ui", env), 3411);
+});
+
+test("Vite's port follows the base port, then the default", () => {
+  assert.equal(vitePortFromEnv({ [BASE_PORT_ENV]: "3410" }), 3411);
+  assert.equal(vitePortFromEnv({}), 3031);
 });
 
 test("an invalid base port gives no service port", () => {

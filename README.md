@@ -95,6 +95,9 @@ The sample UI polls:
 http://127.0.0.1:<APP_PORT>/api/app-state
 ```
 
+Set `APP_HOST` to change the host in that address, or `WORKTREE_API_BASE` to replace
+the whole base URL. The backend reads `APP_HOST` and `APP_PORT` too.
+
 The backend also exposes:
 
 ```text

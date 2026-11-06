@@ -25,6 +25,7 @@ import {
   serviceArgs,
   servicePortFromEnv,
   servicesForTarget,
+  vitePortFromEnv,
 } from "./services.mjs";
 import { createStateStream } from "./state-stream.mjs";
 import { createWorktree } from "./worktree-create.mjs";
@@ -61,7 +62,6 @@ const DASHBOARD_HOST =
   LOCAL_ENV.WORKTREE_DASHBOARD_HOST ??
   "127.0.0.1";
 const DASHBOARD_ROOT = resolve(process.cwd());
-const DEFAULT_APP_PORT = 3030;
 const FALLBACK_PRIMARY_BRANCHES = ["develop", "main"];
 let primaryBranchesPromise = null;
 const checkRequest = createRequestGuard({
@@ -1058,14 +1058,10 @@ function textResponse(res, statusCode, text) {
   res.end(text);
 }
 
-/**
- * Returns how to reach the dashboard page, which Vite serves separately from this
- * API. The port matches Vite's: this checkout's base port plus one, or 3031.
- */
+/** Returns how to reach the dashboard page, which Vite serves separately from this API. */
 function dashboardPageHint() {
-  const basePort =
-    basePortFromEnv({ ...LOCAL_ENV, ...process.env }) ?? DEFAULT_APP_PORT;
-  const pageUrl = `http://localhost:${basePort + 1}/worktree-dashboard.html`;
+  const vitePort = vitePortFromEnv({ ...LOCAL_ENV, ...process.env });
+  const pageUrl = `http://localhost:${vitePort}/worktree-dashboard.html`;
   return `Dashboard page: run "npm run worktree:dashboard:ui", then open ${pageUrl}`;
 }
 
@@ -1083,7 +1079,7 @@ function parseServiceTarget(searchParams) {
 }
 
 function parseLogService(searchParams) {
-  const service = searchParams.get("service") ?? "backend";
+  const service = searchParams.get("service") ?? SERVICES[0];
   return Object.hasOwn(SERVICE_DEFINITIONS, service) ? service : null;
 }
 

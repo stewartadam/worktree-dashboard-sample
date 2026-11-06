@@ -36,6 +36,10 @@ function platformCommand(name, windowsSuffix) {
 }
 
 export const BASE_PORT_ENV = "APP_PORT";
+/** The base port when a checkout's env doesn't set one. */
+export const DEFAULT_BASE_PORT = 3030;
+/** Where Vite listens in the block. It serves both the `ui` service and the dashboard page. */
+const VITE_PORT_OFFSET = 1;
 
 export const SERVICE_DEFINITIONS = {
   backend: {
@@ -49,7 +53,7 @@ export const SERVICE_DEFINITIONS = {
     label: "Web UI",
     command: platformCommand("npm", ".cmd"),
     args: ["run", "dev"],
-    portOffset: 1,
+    portOffset: VITE_PORT_OFFSET,
     url: true,
   },
 };
@@ -97,6 +101,11 @@ export function servicePortFromEnv(service, env) {
   if (offset === undefined) return null;
   const base = basePortFromEnv(env);
   return base === null ? null : base + offset;
+}
+
+/** Returns the port Vite listens on for this env, using the default base port if unset. */
+export function vitePortFromEnv(env) {
+  return (basePortFromEnv(env) ?? DEFAULT_BASE_PORT) + VITE_PORT_OFFSET;
 }
 
 /** Returns the arguments to spawn a service with, resolving a function of env and port. */

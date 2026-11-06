@@ -3,6 +3,11 @@ import { resolve } from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, loadEnv } from "vite";
 import solidPlugin from "vite-plugin-solid";
+import {
+  BASE_PORT_ENV,
+  DEFAULT_BASE_PORT,
+  vitePortFromEnv,
+} from "./worktree-dashboard/services.mjs";
 
 interface TauriConfig {
   productName?: string;
@@ -50,12 +55,12 @@ function resolveDashboardTarget(env: Record<string, string>): string {
 
 /** Resolves the worktree backend API base URL. */
 function resolveWorktreeApiBase(env: Record<string, string>): string {
-  if (env.VITE_WORKTREE_APP_API_BASE) {
-    return env.VITE_WORKTREE_APP_API_BASE.replace(/\/+$/u, "");
+  if (env.WORKTREE_API_BASE) {
+    return env.WORKTREE_API_BASE.replace(/\/+$/u, "");
   }
 
-  const appHost = env.WORKTREE_APP_HOST || "127.0.0.1";
-  const appPort = env.APP_PORT || "3030";
+  const appHost = env.APP_HOST || "127.0.0.1";
+  const appPort = env[BASE_PORT_ENV] || DEFAULT_BASE_PORT;
   return `http://${appHost}:${appPort}/api`;
 }
 
@@ -69,8 +74,9 @@ const appCopyright = formatCopyrightForHtml(
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, resolve(__dirname), [
-    "APP_PORT",
-    "WORKTREE_APP_",
+    BASE_PORT_ENV,
+    "APP_HOST",
+    "WORKTREE_API_BASE",
     "WORKTREE_DASHBOARD_",
     "VITE_",
   ]);
@@ -80,15 +86,14 @@ export default defineConfig(({ mode }) => {
 
   const appTitle = tauri ? appName : runtimeEnv.VITE_APP_TITLE || appName;
 
-  const defaultVitePort = 3031;
-  const vitePort =
-    (tauri ? undefined : Number(env.APP_PORT) + 1) || defaultVitePort;
+  // A Tauri build expects a fixed dev URL, as configured in tauri.conf.json.
+  const vitePort = vitePortFromEnv(tauri ? {} : env);
 
   return {
     root: "./webui",
     // Do not use .env if running a Tauri build, it expects a fixed backend URL as configured in tauri.config.json
     envDir: tauri ? false : resolve(__dirname),
-    envPrefix: ["VITE_", "TAURI_", "WORKTREE_APP_", "WORKTREE_DASHBOARD_"],
+    envPrefix: ["VITE_", "TAURI_", "WORKTREE_DASHBOARD_"],
     build: {
       sourcemap: true,
     },
@@ -101,9 +106,7 @@ export default defineConfig(({ mode }) => {
       __WORKTREE_DASHBOARD_API_BASE__: JSON.stringify(
         resolveDashboardApiBase(runtimeEnv),
       ),
-      __WORKTREE_API_BASE__: JSON.stringify(
-        resolveWorktreeApiBase(runtimeEnv),
-      ),
+      __WORKTREE_API_BASE__: JSON.stringify(resolveWorktreeApiBase(runtimeEnv)),
     },
     plugins: [tailwindcss(), solidPlugin()],
     server: {

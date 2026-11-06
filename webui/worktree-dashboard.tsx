@@ -517,7 +517,7 @@ function WorktreeDashboardApp() {
   async function runAction(
     worktreeId: string,
     action: ServiceAction,
-    service: ServiceTarget = "backend",
+    service: ServiceTarget,
   ): Promise<void> {
     const key = actionKey(worktreeId, action, service);
     markPendingOperation(key);
