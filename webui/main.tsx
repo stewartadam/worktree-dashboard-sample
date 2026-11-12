@@ -2,6 +2,7 @@ import { createSignal, Index, onCleanup, onMount, Show } from "solid-js";
 import { render } from "solid-js/web";
 
 import "./index.css";
+import "./host-monitor.css";
 
 interface CpuPoint {
   timestampMs: number;
@@ -40,6 +41,19 @@ const REQUEST_TIMEOUT_MS = 3000;
 /** How many samples the chart spans. Matches the backend's history length. */
 const CHART_SLOTS = 60;
 const LOAD_WINDOWS = ["1 min", "5 min", "15 min"];
+const GRAPH_ACCENT_STORAGE_KEY = "host-monitor-graph-accent";
+
+function readGraphAccent(): string {
+  try {
+    const saved = localStorage.getItem(GRAPH_ACCENT_STORAGE_KEY);
+    if (saved && /^#[0-9a-f]{6}$/i.test(saved)) return saved;
+  } catch {
+    // The picker still works when browser storage is unavailable.
+  }
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue("--cp-accent")
+    .trim();
+}
 
 function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -123,7 +137,7 @@ function CpuChart(props: { history: CpuPoint[] }) {
           >
             <polyline
               fill="none"
-              class="stroke-cyan-400"
+              class="graph-accent-line"
               stroke-width="2"
               stroke-linejoin="round"
               stroke-linecap="round"
@@ -139,7 +153,7 @@ function CpuChart(props: { history: CpuPoint[] }) {
                   style={{ left: `${current().x}%` }}
                 />
                 <div
-                  class="pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-400 ring-2 ring-slate-900"
+                  class="graph-accent-fill pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-slate-900"
                   style={{
                     left: `${current().x}%`,
                     top: `${chartY(current().point.cpuPercent)}%`,
@@ -183,7 +197,7 @@ function MemoryMeter(props: { used: number; total: number }) {
       aria-label={`${formatPercent(percent())} of memory in use`}
     >
       <div
-        class="h-full rounded-full bg-cyan-400 transition-[width] duration-500"
+        class="graph-accent-fill h-full rounded-full transition-[width] duration-500"
         style={{ width: `${percent()}%` }}
       />
     </div>
@@ -220,7 +234,7 @@ function CoreBars(props: { percents: number[] }) {
               onPointerEnter={() => setHoverIndex(index)}
             >
               <div
-                class="w-full rounded-t-sm bg-cyan-400 transition-[height] duration-500"
+                class="graph-accent-fill w-full rounded-t-sm transition-[height] duration-500"
                 style={{ height: `${Math.max(percent(), 2)}%` }}
               />
             </div>
@@ -245,8 +259,18 @@ function BackendFact(props: { label: string; value: string }) {
 function HostMonitor() {
   const [snapshot, setSnapshot] = createSignal<SystemSnapshot | null>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [graphAccent, setGraphAccent] = createSignal(readGraphAccent());
   let timer: number | undefined;
   let stopped = false;
+
+  function changeGraphAccent(color: string) {
+    setGraphAccent(color);
+    try {
+      localStorage.setItem(GRAPH_ACCENT_STORAGE_KEY, color);
+    } catch {
+      // Storage restrictions must not prevent live color updates.
+    }
+  }
 
   async function poll() {
     try {
@@ -277,7 +301,10 @@ function HostMonitor() {
   });
 
   return (
-    <main class="min-h-screen bg-slate-950 text-slate-100">
+    <main
+      class="min-h-screen bg-slate-950 text-slate-100"
+      style={{ "--cp-graph-accent": graphAccent() }}
+    >
       <section class="mx-auto w-full max-w-4xl px-6 py-10">
         <header class="mb-6 flex items-end justify-between gap-4">
           <div class="min-w-0">
@@ -294,6 +321,17 @@ function HostMonitor() {
             {error() ? "offline" : "connected"}
           </span>
         </header>
+
+        <div class="mb-4 flex justify-end">
+          <label class="graph-accent-picker">
+            Graph accent
+            <input
+              type="color"
+              value={graphAccent()}
+              onInput={(event) => changeGraphAccent(event.currentTarget.value)}
+            />
+          </label>
+        </div>
 
         <Show when={error()}>
           <p

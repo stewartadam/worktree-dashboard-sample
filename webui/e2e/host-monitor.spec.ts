@@ -77,6 +77,71 @@ test("reads out a value when hovering the chart and core bars", async ({
   await expect(page.getByText("Core 2: 42%")).toBeVisible();
 });
 
+test("changes every graph's accent and remembers it after reload", async ({
+  page,
+}) => {
+  await mockSystem(page, systemSnapshot());
+  await page.goto("/");
+
+  const picker = page.getByLabel("Graph accent");
+  await picker.fill("#e17024");
+  await expect(picker).toHaveValue("#e17024");
+
+  const chart = page.getByRole("img", { name: /CPU usage over/ });
+  const memory = page.getByRole("img", { name: /of memory in use/ });
+  const cores = page.getByRole("img", { name: /Usage per core/ });
+  await expect(chart.locator("polyline")).toHaveCSS("stroke", "rgb(225, 112, 36)");
+  await expect(memory.locator(":scope > div")).toHaveCSS(
+    "background-color",
+    "rgb(225, 112, 36)",
+  );
+  for (const bar of await cores.locator(":scope > div > div").all()) {
+    await expect(bar).toHaveCSS("background-color", "rgb(225, 112, 36)");
+  }
+
+  await chart.hover();
+  await expect(chart.locator(".graph-accent-fill")).toHaveCSS(
+    "background-color",
+    "rgb(225, 112, 36)",
+  );
+
+  await page.reload();
+  await expect(picker).toHaveValue("#e17024");
+  await expect(chart.locator("polyline")).toHaveCSS("stroke", "rgb(225, 112, 36)");
+});
+
+test("ignores an invalid saved accent", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("host-monitor-graph-accent", "not-a-color");
+  });
+  await mockSystem(page, systemSnapshot());
+  await page.goto("/?clawpilotTheme=light");
+
+  await expect(page.getByLabel("Graph accent")).toHaveValue("#b11f4b");
+  await expect(
+    page.getByRole("img", { name: /CPU usage over/ }).locator("polyline"),
+  ).toHaveCSS("stroke", "rgb(177, 31, 75)");
+});
+
+test("changes the accent even when storage is unavailable", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      get() {
+        throw new DOMException("Storage is unavailable", "SecurityError");
+      },
+    });
+  });
+  await mockSystem(page, systemSnapshot());
+  await page.goto("/?clawpilotTheme=dark");
+
+  const picker = page.getByLabel("Graph accent");
+  await expect(picker).toHaveValue("#fd8ea1");
+  await picker.fill("#e17024");
+  await expect(
+    page.getByRole("img", { name: /CPU usage over/ }).locator("polyline"),
+  ).toHaveCSS("stroke", "rgb(225, 112, 36)");
+});
+
 test("hides load average when the host has none", async ({ page }) => {
   await mockSystem(page, systemSnapshot({ loadAverage: null }));
   await page.goto("/");
