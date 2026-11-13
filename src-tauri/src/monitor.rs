@@ -92,7 +92,8 @@ impl Monitor {
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
-        );
+        )
+        .expect("failed to initialize system monitoring");
         std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
 
         let pid = std::process::id();
@@ -107,8 +108,8 @@ impl Monitor {
             worktree: worktree_name(&cwd),
             port,
             host: HostInfo {
-                name: System::host_name().unwrap_or_else(|| "unknown".to_string()),
-                os: System::long_os_version().unwrap_or_else(|| std::env::consts::OS.to_string()),
+                name: System::host_name().unwrap_or_else(|_| "unknown".to_string()),
+                os: System::long_os_version().unwrap_or_else(|_| std::env::consts::OS.to_string()),
                 arch: std::env::consts::ARCH,
                 core_count: reading.core_cpu_percents.len(),
             },
@@ -166,17 +167,22 @@ fn take_reading(system: &mut System, pid: u32) -> (Reading, u64) {
         ProcessRefreshKind::nothing().with_memory(),
     );
 
-    let load = System::load_average();
     let reading = Reading {
         cpu_percent: round_percent(system.global_cpu_usage()),
         core_cpu_percents: system
             .cpus()
             .iter()
-            .map(|cpu| round_percent(cpu.cpu_usage()))
+            .map(|cpu| round_percent(cpu.usage()))
             .collect(),
         memory_used_bytes: system.used_memory(),
         memory_total_bytes: system.total_memory(),
-        load_average: (!cfg!(windows)).then_some([load.one, load.five, load.fifteen]),
+        load_average: if cfg!(windows) {
+            None
+        } else {
+            System::load_average()
+                .ok()
+                .map(|load| [load.one, load.five, load.fifteen])
+        },
     };
     let backend_memory_bytes = system.process(pid).map_or(0, |process| process.memory());
     (reading, backend_memory_bytes)
